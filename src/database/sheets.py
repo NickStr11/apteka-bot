@@ -24,6 +24,7 @@ HEADERS = [
     "SMS статус",
     "Отправлено",
     "Примечание",
+    "Контакт",
 ]
 
 
@@ -39,6 +40,7 @@ class OrderRow:
     sms_status: str = ""
     sent: str = ""
     note: str = ""
+    contact_status: str = "❌ Не обработан"
 
 
 def get_client(credentials_path: str | Path) -> gspread.Client:
@@ -83,8 +85,8 @@ def get_sheet(client: gspread.Client) -> gspread.Worksheet:
     
     # Ensure headers exist
     if sheet.row_count == 0 or sheet.cell(1, 1).value != HEADERS[0]:
-        sheet.update("A1:I1", [HEADERS])
-        sheet.format("A1:I1", {"textFormat": {"bold": True}})
+        sheet.update("A1:J1", [HEADERS])
+        sheet.format("A1:J1", {"textFormat": {"bold": True}})
     
     return sheet
 
@@ -109,6 +111,7 @@ def add_order(
         order.sms_status,
         order.sent,
         order.note,
+        order.contact_status,
     ]
     
     sheet.append_row(row_data)
@@ -135,10 +138,11 @@ def update_order_row(
         order.sms_status,
         order.sent,
         order.note,
+        order.contact_status,
     ]
     
-    # Range from A to I for the given row
-    cell_range = f"A{row}:I{row}"
+    # Range from A to J for the given row
+    cell_range = f"A{row}:J{row}"
     sheet.update(cell_range, [row_data])
 
 
@@ -192,6 +196,39 @@ def get_pending_orders(sheet: gspread.Worksheet) -> list[tuple[int, OrderRow]]:
                 sms_status=row[6],
                 sent=row[7],
                 note=row[8] if len(row) > 8 else "",
+                contact_status=row[9] if len(row) > 9 else "❌ Не обработан",
             )))
     
     return pending
+
+
+def get_orders_by_date(sheet: gspread.Worksheet, date_str: str) -> list[tuple[int, OrderRow]]:
+    """Get orders for a specific date (format: DD.MM.YYYY or DD.MM)."""
+    all_values = sheet.get_all_values()
+    orders = []
+    
+    for i, row in enumerate(all_values[1:], start=2):  # Skip header
+        if len(row) >= 4:
+            # Check if date matches (supports both DD.MM.YYYY and DD.MM formats)
+            row_date = row[0]
+            if row_date.startswith(date_str) or date_str in row_date:
+                orders.append((i, OrderRow(
+                    date=row[0],
+                    order_number=row[1],
+                    phone=row[2],
+                    products=row[3],
+                    total=float(row[4]) if row[4] and row[4].replace('.','').isdigit() else 0,
+                    wa_status=row[5] if len(row) > 5 else "",
+                    sms_status=row[6] if len(row) > 6 else "",
+                    sent=row[7] if len(row) > 7 else "",
+                    note=row[8] if len(row) > 8 else "",
+                    contact_status=row[9] if len(row) > 9 else "❌ Не обработан",
+                )))
+    
+    return orders
+
+
+def update_contact_status(sheet: gspread.Worksheet, row: int, status: str) -> None:
+    """Update contact status for an order (column 10 = J)."""
+    sheet.update_cell(row, 10, status)
+

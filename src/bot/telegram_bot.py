@@ -19,12 +19,13 @@ from telegram.ext import (
 import asyncio
 from aiohttp import web
 import aiohttp_cors
+from datetime import datetime, timedelta
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import load_config
-from database.sheets import get_client, get_sheet, add_order, update_order_row, OrderRow
+from database.sheets import get_client, get_sheet, add_order, update_order_row, OrderRow, get_orders_by_date, update_contact_status
 from extractors.phone import extract_phone
 from extractors.apteka_parser import extract_product_from_url
 
@@ -385,6 +386,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from database.sheets import delete_order_row
     
     query = update.callback_query
+    
+    # Check if this is a contact callback - handle it first
+    if query.data.startswith("contact_"):
+        await handle_contact_callback(update, context)
+        return
+    
     await query.answer()
     
     last_row = context.user_data.get('last_row_index')
@@ -551,6 +558,119 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message += f"• {row[0]} — {row[2]} — {row[3]}\n"
     
     await update.message.reply_text(message)
+
+
+def get_contact_keyboard(row_number: int):
+    """Get keyboard with contact action buttons."""
+    keyboard = [
+        [
+            InlineKeyboardButton("📞", callback_data=f"contact_call_{row_number}"),
+            InlineKeyboardButton("💬", callback_data=f"contact_sms_{row_number}"),
+            InlineKeyboardButton("📱", callback_data=f"contact_wa_{row_number}"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_reset_keyboard(row_number: int):
+    """Get keyboard with reset button."""
+    keyboard = [
+        [InlineKeyboardButton("↩️ Сбросить", callback_data=f"contact_reset_{row_number}")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show yesterday's orders with contact action buttons."""
+    user_id = update.effective_user.id
+    if not is_authorized(user_id):
+        await update.message.reply_text("⛔ Доступ запрещён")
+        return
+    
+    sheet = context.bot_data['sheet']
+    
+    # Get yesterday's date
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
+    orders = get_orders_by_date(sheet, yesterday)
+    
+    if not orders:
+        await update.message.reply_text(f"📭 Заказов за {yesterday} нет")
+        return
+    
+    await update.message.reply_text(f"📅 Заказы за {yesterday}:\n\nНажмите на заказ для действий:")
+    
+    # Send each order as a separate message with buttons
+    for row_num, order in orders:
+        status_icon = order.contact_status if order.contact_status else "❌ Не обработан"
+        
+        text = (
+            f"📦 #{order.order_number}\n"
+            f"💊 {order.products}\n"
+            f"📞 {order.phone}\n"
+            f"📅 {order.date}\n"
+            f"📋 {status_icon}"
+        )
+        
+        # If already processed, show reset button; otherwise show action buttons
+        if "❌" in status_icon:
+            keyboard = get_contact_keyboard(row_num)
+        else:
+            keyboard = get_reset_keyboard(row_num)
+        
+        await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle contact action button press."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    sheet = context.bot_data['sheet']
+    
+    if not data.startswith("contact_"):
+        return False  # Not a contact callback
+    
+    parts = data.split("_")
+    action = parts[1]  # call, sms, wa, reset
+    row_num = int(parts[2])
+    
+    now = datetime.now().strftime("%d.%m %H:%M")
+    
+    status_map = {
+        "call": f"📞 Позвонил ({now})",
+        "sms": f"💬 SMS ({now})",
+        "wa": f"📱 WhatsApp ({now})",
+        "reset": "❌ Не обработан",
+    }
+    
+    new_status = status_map.get(action, "❌ Не обработан")
+    
+    # Update in Google Sheets
+    update_contact_status(sheet, row_num, new_status)
+    
+    # Update the message
+    old_text = query.message.text
+    lines = old_text.split("\n")
+    
+    # Replace the status line
+    new_lines = []
+    for line in lines:
+        if line.startswith("📋"):
+            new_lines.append(f"📋 {new_status}")
+        else:
+            new_lines.append(line)
+    
+    new_text = "\n".join(new_lines)
+    
+    # Update keyboard
+    if action == "reset":
+        keyboard = get_contact_keyboard(row_num)
+    else:
+        keyboard = get_reset_keyboard(row_num)
+    
+    await query.edit_message_text(new_text, reply_markup=keyboard)
+    return True
 
 
 def main():
