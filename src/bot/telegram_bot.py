@@ -569,16 +569,17 @@ def get_contact_keyboard(row_number: int, phone: str = ""):
     
     if phone_digits:
         keyboard = [
-            # Row 1: Direct links to messengers
+            # Row 1: Direct links to messengers (icons only)
             [
-                InlineKeyboardButton("📱 WA", url=f"https://wa.me/{phone_digits}"),
-                InlineKeyboardButton("✈️ TG", url=f"https://t.me/+{phone_digits}"),
-                InlineKeyboardButton("🟦 Max", url=f"https://vk.me/+{phone_digits}"),
+                InlineKeyboardButton("📱", url=f"https://wa.me/{phone_digits}"),  # WhatsApp
+                InlineKeyboardButton("✈️", url=f"https://t.me/+{phone_digits}"),  # Telegram
+                InlineKeyboardButton("💬", url=f"sms:+{phone_digits}"),  # SMS
+                InlineKeyboardButton("🟦", url=f"https://max.ru/im?phone={phone_digits}"),  # Max
             ],
-            # Row 2: Status mark buttons
+            # Row 2: Call + status buttons
             [
+                InlineKeyboardButton("📞", url=f"tel:+{phone_digits}"),  # Call dialer
                 InlineKeyboardButton("✅ Готово", callback_data=f"contact_done_{row_number}"),
-                InlineKeyboardButton("📞 Позвонил", callback_data=f"contact_call_{row_number}"),
             ],
         ]
     else:
@@ -586,7 +587,6 @@ def get_contact_keyboard(row_number: int, phone: str = ""):
         keyboard = [
             [
                 InlineKeyboardButton("✅ Готово", callback_data=f"contact_done_{row_number}"),
-                InlineKeyboardButton("📞 Позвонил", callback_data=f"contact_call_{row_number}"),
             ],
         ]
     
