@@ -449,7 +449,7 @@ async def show_today_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # If already processed, show reset button; otherwise show action buttons
         if "❌" in status_icon:
-            keyboard = get_contact_keyboard(row_num)
+            keyboard = get_contact_keyboard(row_num, order.phone)
         else:
             keyboard = get_reset_keyboard(row_num)
         
@@ -562,19 +562,34 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message)
 
 
-def get_contact_keyboard(row_number: int):
-    """Get keyboard with contact action buttons."""
-    keyboard = [
-        [
-            InlineKeyboardButton("📞", callback_data=f"contact_call_{row_number}"),
-            InlineKeyboardButton("💬", callback_data=f"contact_sms_{row_number}"),
-            InlineKeyboardButton("📱", callback_data=f"contact_wa_{row_number}"),
-        ],
-        [
-            InlineKeyboardButton("✈️ TG", callback_data=f"contact_tg_{row_number}"),
-            InlineKeyboardButton("🟦 Max", callback_data=f"contact_max_{row_number}"),
+def get_contact_keyboard(row_number: int, phone: str = ""):
+    """Get keyboard with direct messenger links + status buttons."""
+    # Clean phone for URLs
+    phone_digits = ''.join(c for c in phone if c.isdigit())
+    
+    if phone_digits:
+        keyboard = [
+            # Row 1: Direct links to messengers
+            [
+                InlineKeyboardButton("📱 WA", url=f"https://wa.me/{phone_digits}"),
+                InlineKeyboardButton("✈️ TG", url=f"https://t.me/+{phone_digits}"),
+                InlineKeyboardButton("🟦 Max", url=f"https://vk.me/+{phone_digits}"),
+            ],
+            # Row 2: Status mark buttons
+            [
+                InlineKeyboardButton("✅ Готово", callback_data=f"contact_done_{row_number}"),
+                InlineKeyboardButton("📞 Позвонил", callback_data=f"contact_call_{row_number}"),
+            ],
         ]
-    ]
+    else:
+        # Fallback if no phone - only status buttons
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Готово", callback_data=f"contact_done_{row_number}"),
+                InlineKeyboardButton("📞 Позвонил", callback_data=f"contact_call_{row_number}"),
+            ],
+        ]
+    
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -619,7 +634,7 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # If already processed, show reset button; otherwise show action buttons
         if "❌" in status_icon:
-            keyboard = get_contact_keyboard(row_num)
+            keyboard = get_contact_keyboard(row_num, order.phone)
         else:
             keyboard = get_reset_keyboard(row_num)
         
@@ -644,11 +659,8 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
     now = datetime.now().strftime("%d.%m %H:%M")
     
     status_map = {
+        "done": f"✅ Готово ({now})",
         "call": f"📞 Позвонил ({now})",
-        "sms": f"💬 SMS ({now})",
-        "wa": f"📱 WhatsApp ({now})",
-        "tg": f"✈️ Telegram ({now})",
-        "max": f"🟦 Max ({now})",
         "reset": "❌ Не обработан",
     }
     
@@ -681,38 +693,11 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
     
     # Update keyboard
     if action == "reset":
-        keyboard = get_contact_keyboard(row_num)
+        keyboard = get_contact_keyboard(row_num, phone)
     else:
         keyboard = get_reset_keyboard(row_num)
     
     await query.edit_message_text(new_text, reply_markup=keyboard)
-    
-    # Send clickable link if action is not reset
-    if action != "reset" and phone_digits:
-        link_map = {
-            "call": f"tel:+{phone_digits}",
-            "sms": f"sms:+{phone_digits}",
-            "wa": f"https://wa.me/{phone_digits}",
-            "tg": f"https://t.me/+{phone_digits}",
-            "max": f"https://max.ru/im?phone={phone_digits}",
-        }
-        link = link_map.get(action, "")
-        action_name = {
-            "call": "📞 Позвонить",
-            "sms": "💬 Отправить SMS",
-            "wa": "📱 Открыть WhatsApp",
-            "tg": "✈️ Открыть Telegram",
-            "max": "🟦 Открыть Max",
-        }.get(action, "")
-        
-        if link:
-            await query.message.reply_text(
-                f"✅ Статус: {new_status}\n\n"
-                f"☎️ Номер: `+{phone_digits}`\n\n"
-                f"👉 [{action_name}]({link})",
-                parse_mode="Markdown",
-                disable_web_page_preview=True
-            )
     
     return True
 
