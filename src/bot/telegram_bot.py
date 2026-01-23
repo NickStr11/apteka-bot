@@ -569,16 +569,15 @@ def get_contact_keyboard(row_number: int, phone: str = ""):
     
     if phone_digits:
         keyboard = [
-            # Row 1: Direct links to messengers (icons only)
+            # Row 1: Direct links to messengers (only https:// allowed by Telegram)
             [
                 InlineKeyboardButton("📱", url=f"https://wa.me/{phone_digits}"),  # WhatsApp
                 InlineKeyboardButton("✈️", url=f"https://t.me/+{phone_digits}"),  # Telegram
-                InlineKeyboardButton("💬", url=f"sms:+{phone_digits}"),  # SMS
                 InlineKeyboardButton("🟦", url=f"https://max.ru/im?phone={phone_digits}"),  # Max
             ],
-            # Row 2: Call + status buttons
+            # Row 2: Status buttons (SMS/Call не поддерживаются как URL в Telegram)
             [
-                InlineKeyboardButton("📞", url=f"tel:+{phone_digits}"),  # Call dialer
+                InlineKeyboardButton("📞 Позвонил", callback_data=f"contact_call_{row_number}"),
                 InlineKeyboardButton("✅ Готово", callback_data=f"contact_done_{row_number}"),
             ],
         ]
