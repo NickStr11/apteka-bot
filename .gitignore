@@ -1,0 +1,33 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Environment Variables
+.env
+
+# Credentials (Sensitive)
+credentials.json
+token.json
+google_credentials_path
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE files
+.vscode/
+.idea/
+
+# Database / Logs
+*.log
+*.sqlite
+logs/
+
+# Temporary / OS
+.DS_Store
+Thumbs.db
+extension/icon.png
+test_parser.py
+clear_sheet.py

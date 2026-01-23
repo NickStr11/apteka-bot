@@ -1,0 +1,22 @@
+{
+    "manifest_version": 3,
+    "name": "Apteka Order Helper",
+    "version": "1.0",
+    "description": "Быстрое оформление заказа с Apteka.ru",
+    "permissions": [
+        "activeTab",
+        "storage"
+    ],
+    "action": {
+        "default_popup": "popup.html",
+        "default_icon": "icon128.png"
+    },
+    "icons": {
+        "16": "icon128.png",
+        "48": "icon128.png",
+        "128": "icon128.png"
+    },
+    "content_security_policy": {
+        "extension_pages": "script-src 'self'; object-src 'self'"
+    }
+}
