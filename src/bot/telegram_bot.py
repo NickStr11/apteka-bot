@@ -569,6 +569,10 @@ def get_contact_keyboard(row_number: int):
             InlineKeyboardButton("📞", callback_data=f"contact_call_{row_number}"),
             InlineKeyboardButton("💬", callback_data=f"contact_sms_{row_number}"),
             InlineKeyboardButton("📱", callback_data=f"contact_wa_{row_number}"),
+        ],
+        [
+            InlineKeyboardButton("✈️ TG", callback_data=f"contact_tg_{row_number}"),
+            InlineKeyboardButton("🟦 Max", callback_data=f"contact_max_{row_number}"),
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -634,7 +638,7 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
         return False  # Not a contact callback
     
     parts = data.split("_")
-    action = parts[1]  # call, sms, wa, reset
+    action = parts[1]  # call, sms, wa, tg, max, reset
     row_num = int(parts[2])
     
     now = datetime.now().strftime("%d.%m %H:%M")
@@ -643,6 +647,8 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
         "call": f"📞 Позвонил ({now})",
         "sms": f"💬 SMS ({now})",
         "wa": f"📱 WhatsApp ({now})",
+        "tg": f"✈️ Telegram ({now})",
+        "max": f"🟦 Max ({now})",
         "reset": "❌ Не обработан",
     }
     
@@ -651,9 +657,17 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
     # Update in Google Sheets
     update_contact_status(sheet, row_num, new_status)
     
-    # Update the message
+    # Extract phone from message
     old_text = query.message.text
     lines = old_text.split("\n")
+    phone = ""
+    for line in lines:
+        if line.startswith("📞"):
+            phone = line.replace("📞 ", "").replace("+", "").replace(" ", "").strip()
+            break
+    
+    # Clean phone for links (digits only)
+    phone_digits = ''.join(c for c in phone if c.isdigit())
     
     # Replace the status line
     new_lines = []
@@ -672,6 +686,34 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
         keyboard = get_reset_keyboard(row_num)
     
     await query.edit_message_text(new_text, reply_markup=keyboard)
+    
+    # Send clickable link if action is not reset
+    if action != "reset" and phone_digits:
+        link_map = {
+            "call": f"tel:+{phone_digits}",
+            "sms": f"sms:+{phone_digits}",
+            "wa": f"https://wa.me/{phone_digits}",
+            "tg": f"https://t.me/+{phone_digits}",
+            "max": f"https://max.ru/im?phone={phone_digits}",
+        }
+        link = link_map.get(action, "")
+        action_name = {
+            "call": "📞 Позвонить",
+            "sms": "💬 Отправить SMS",
+            "wa": "📱 Открыть WhatsApp",
+            "tg": "✈️ Открыть Telegram",
+            "max": "🟦 Открыть Max",
+        }.get(action, "")
+        
+        if link:
+            await query.message.reply_text(
+                f"✅ Статус: {new_status}\n\n"
+                f"☎️ Номер: `+{phone_digits}`\n\n"
+                f"👉 [{action_name}]({link})",
+                parse_mode="Markdown",
+                disable_web_page_preview=True
+            )
+    
     return True
 
 
