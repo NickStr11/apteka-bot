@@ -422,36 +422,38 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_today_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show today's orders."""
+    """Show today's orders with contact action buttons."""
     sheet = context.bot_data['sheet']
     
-    # Get all orders
-    all_values = sheet.get_all_values()
+    # Get today's date
     today = datetime.now().strftime("%d.%m.%Y")
+    orders = get_orders_by_date(sheet, today)
     
-    today_orders = []
-    for row in all_values[1:]:  # Skip header
-        if len(row) >= 4 and row[0].startswith(today):
-            today_orders.append({
-                'phone': row[2],
-                'product': row[3],
-                'time': row[0].split()[1] if ' ' in row[0] else '',
-            })
-    
-    if not today_orders:
+    if not orders:
         await update.message.reply_text("📭 Сегодня заказов нет")
         return
     
-    message = f"📅 Заказы за {today}\n\n"
-    for i, order in enumerate(today_orders, 1):
-        message += f"{i}. {order['phone']} — {order['product']}"
-        if order['time']:
-            message += f" ({order['time']})"
-        message += "\n"
+    await update.message.reply_text(f"📅 Заказы за {today} ({len(orders)} шт.):\n\nНажмите для действий:")
     
-    message += f"\nВсего: {len(today_orders)} заказов"
-    
-    await update.message.reply_text(message)
+    # Send each order as a separate message with buttons
+    for row_num, order in orders:
+        status_icon = order.contact_status if order.contact_status else "❌ Не обработан"
+        
+        text = (
+            f"📦 #{order.order_number}\n"
+            f"💊 {order.products}\n"
+            f"📞 {order.phone}\n"
+            f"📅 {order.date}\n"
+            f"📋 {status_icon}"
+        )
+        
+        # If already processed, show reset button; otherwise show action buttons
+        if "❌" in status_icon:
+            keyboard = get_contact_keyboard(row_num)
+        else:
+            keyboard = get_reset_keyboard(row_num)
+        
+        await update.message.reply_text(text, reply_markup=keyboard)
 
 
 async def api_handle_order(request):
