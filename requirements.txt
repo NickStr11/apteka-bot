@@ -12,3 +12,4 @@ apscheduler==3.10.4
 pytz
 html2text
 pdfplumber
+python-docx
