@@ -29,6 +29,7 @@ from config import load_config
 from database.sheets import get_client, get_sheet, add_order, update_order_row, OrderRow, get_orders_by_date, update_contact_status
 from extractors.phone import extract_phone
 from extractors.apteka_parser import extract_product_from_url
+from email_monitor import EmailMonitor, monitor_loop
 
 logger = logging.getLogger(__name__)
 
@@ -778,6 +779,53 @@ def main():
         )
         scheduler.start()
         logger.info("⏰ Планировщик запущен: напоминание в 12:00 ежедневно")
+        
+        # Email monitor callback
+        async def on_email_order(order_data):
+            """Process order from email."""
+            if not order_data.phone:
+                logger.warning(f"📧 Письмо без телефона: {order_data.source_subject}")
+                return
+            
+            # Add order to sheet
+            now = datetime.now()
+            order_row = OrderRow(
+                date=now.strftime("%d.%m.%Y %H:%M"),
+                order_number=order_data.order_number or "#Email",
+                phone=order_data.phone,
+                products="(из письма)",
+                total=0,
+                note="📧 Email",
+            )
+            row_num = add_order(sheet, order_row)
+            logger.info(f"📧 Заказ из email добавлен: {order_data.phone}")
+            
+            # Notify admin
+            try:
+                phone_display = f"+{order_data.phone.lstrip('+')}"
+                await app.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"📧 **Новый заказ из почты!**\n\n"
+                         f"📱 {phone_display}\n"
+                         f"📋 Тема: {order_data.source_subject[:50]}...",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"❌ Ошибка уведомления: {e}")
+        
+        # Start email monitor if configured
+        if config.email_host and config.email_user and config.email_password:
+            email_monitor = EmailMonitor(
+                host=config.email_host,
+                user=config.email_user,
+                password=config.email_password,
+                folder=config.email_folder,
+                from_filter=config.email_from_filter,
+            )
+            asyncio.create_task(monitor_loop(email_monitor, on_email_order, check_interval=120))
+            logger.info("📧 Email-мониторинг запущен (проверка каждые 2 мин)")
+        else:
+            logger.info("📧 Email-мониторинг отключен (нет настроек в .env)")
         
         # Start bot polling
         async with app:
