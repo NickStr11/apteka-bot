@@ -5,6 +5,7 @@ import email
 import imaplib
 import sys
 from dataclasses import dataclass
+from datetime import datetime, date
 from email.header import decode_header
 from email.message import Message
 from pathlib import Path
@@ -183,12 +184,15 @@ class EmailMonitor:
         password: str,
         folder: str = "INBOX",
         from_filter: str = "apteka.ru",
+        since_date: date | None = None,
     ):
         self.host = host
         self.user = user
         self.password = password
         self.folder = folder
         self.from_filter = from_filter
+        # Default to today if not specified
+        self.since_date = since_date or date.today()
         self._connection: imaplib.IMAP4_SSL | None = None
     
     def connect(self) -> None:
@@ -225,7 +229,9 @@ class EmailMonitor:
         senders = [s.strip() for s in self.from_filter.split(",")]
         
         for filter_sender in senders:
-            search_criteria = f'(UNSEEN FROM "{filter_sender}")'
+            # SINCE filter uses DD-MMM-YYYY format (e.g., 26-Jan-2026)
+            since_str = self.since_date.strftime("%d-%b-%Y")
+            search_criteria = f'(UNSEEN SINCE {since_str} FROM "{filter_sender}")'
             
             try:
                 _, message_numbers = self._connection.search(None, search_criteria)
