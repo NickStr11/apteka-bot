@@ -467,6 +467,13 @@ async def api_handle_order(request):
         
         if not phone or not url:
             return web.json_response({'status': 'error', 'message': 'Missing phone or url'}, status=400)
+        
+        # Normalize phone number to 7XXXXXXXXXX format
+        phone = ''.join(c for c in phone if c.isdigit())  # Keep only digits
+        if len(phone) == 10 and phone.startswith('9'):
+            phone = '7' + phone  # 9181234567 -> 79181234567
+        elif len(phone) == 11 and phone.startswith('8'):
+            phone = '7' + phone[1:]  # 89181234567 -> 79181234567
             
         logger.info(f"🚀 API Order received: {phone} - {url}")
         
@@ -501,11 +508,11 @@ async def api_handle_order(request):
         await app_tg.bot.send_message(
             chat_id=admin_id,
             text=f"🌐 **Новый заказ из браузера!**\n\n"
-                 f"📞 {phone}\n"
-                 f"💊 {product}\n\n"
-                 f"Записано в таблицу (строка {row_index})",
+                 f"📞 +{phone}\n"
+                 f"💊 {product}",
             parse_mode='Markdown'
         )
+
         
         return web.json_response({'status': 'ok', 'product': product})
         
