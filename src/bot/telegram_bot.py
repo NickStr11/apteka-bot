@@ -20,6 +20,7 @@ import asyncio
 from aiohttp import web
 import aiohttp_cors
 from datetime import datetime, timedelta
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -165,9 +166,8 @@ async def process_order_text(text: str, update: Update, context: ContextTypes.DE
         # Final trim and clean
         item = re.sub(r'\s+', ' ', item).strip(' ,.:;-+|')
         # Remove any remaining stop words at the start/end
-        for sw in ["мне", "на", "для", "и", "а"]:
+        for sw in ["мне", "на", "для", "и", "а", "препарат", "препарата", "препараты", "препарату", "препаратов"]:
             item = re.sub(r'^\b' + sw + r'\b', "", item, flags=re.IGNORECASE).strip()
-            item = re.sub(r'\b' + sw + r'\b$', "", item, flags=re.IGNORECASE).strip()
             
         if item and len(item) > 1:
             final_items.append(f"• {item}")
@@ -439,10 +439,11 @@ async def show_today_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for row_num, order in orders:
         status_icon = order.contact_status if order.contact_status else "❌ Не обработан"
         
+        phone_display = f"+{order.phone.lstrip('+')}"
         text = (
-            f"📦 #{order.order_number}\n"
+            f"📦 *Заказ #{order.order_number}*\n"
             f"💊 {order.products}\n"
-            f"📞 {order.phone}\n"
+            f"📞 {phone_display}\n"
             f"📅 {order.date}\n"
             f"📋 {status_icon}"
         )
@@ -453,7 +454,7 @@ async def show_today_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             keyboard = get_reset_keyboard(row_num)
         
-        await update.message.reply_text(text, reply_markup=keyboard)
+        await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
 
 async def api_handle_order(request):
@@ -542,24 +543,39 @@ async def start_web_server(app_tg):
     logger.info(f"🌐 API сервер запущен на {host}:{port}")
 
 
-async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show order history."""
-    sheet = context.bot_data['sheet']
+async def send_daily_reminder(bot, sheet, admin_id: int):
+    """Send reminder about unprocessed orders from yesterday."""
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
+    orders = get_orders_by_date(sheet, yesterday)
     
-    # Get last 20 orders
-    all_values = sheet.get_all_values()
-    recent = all_values[-20:]  # Last 20 rows
+    # Filter unprocessed orders (without "✅" in contact_status)
+    unprocessed = [
+        (row_num, order) for row_num, order in orders 
+        if "✅" not in (order.contact_status or "")
+    ]
     
-    if len(recent) <= 1:  # Only header
-        await update.message.reply_text("📭 История пуста")
+    if not unprocessed:
+        logger.info(f"📅 За {yesterday} все заказы обработаны!")
         return
     
-    message = "📊 История заказов (последние 20)\n\n"
-    for row in reversed(recent[1:]):  # Skip header, reverse order
-        if len(row) >= 4:
-            message += f"• {row[0]} — {row[2]} — {row[3]}\n"
+    # Build message
+    message = f"⚠️ **Напоминание!**\n\nЗа **{yesterday}** осталось **{len(unprocessed)}** необработанных заказов:\n\n"
     
-    await update.message.reply_text(message)
+    for row_num, order in unprocessed[:10]:  # Limit to 10 to avoid huge messages
+        phone_display = f"+{order.phone.lstrip('+')}"
+        message += f"• {phone_display} — {order.products[:30]}...\n"
+    
+    if len(unprocessed) > 10:
+        message += f"\n... и ещё {len(unprocessed) - 10} заказов."
+    
+    message += "\n\nНажми **📊 История**, чтобы увидеть их."
+    
+    try:
+        await bot.send_message(chat_id=admin_id, text=message, parse_mode="Markdown")
+        logger.info(f"📤 Напоминание отправлено: {len(unprocessed)} заказов за {yesterday}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки напоминания: {e}")
+
 
 
 def get_contact_keyboard(row_number: int, phone: str = ""):
@@ -569,15 +585,14 @@ def get_contact_keyboard(row_number: int, phone: str = ""):
     
     if phone_digits:
         keyboard = [
-            # Row 1: Direct links to messengers (only https:// allowed by Telegram)
+            # Row 1: Messenger logos (colored circles)
             [
-                InlineKeyboardButton("📱", url=f"https://wa.me/{phone_digits}"),  # WhatsApp
-                InlineKeyboardButton("✈️", url=f"https://t.me/+{phone_digits}"),  # Telegram
-                InlineKeyboardButton("🟦", url=f"https://max.ru/im?phone={phone_digits}"),  # Max
+                InlineKeyboardButton("🟢", url=f"https://wa.me/{phone_digits}"),  # WhatsApp (green)
+                InlineKeyboardButton("🔵", url=f"https://t.me/+{phone_digits}"),  # Telegram (blue)
+                InlineKeyboardButton("🟣", callback_data=f"contact_max_{row_number}"),  # Max (purple)
             ],
-            # Row 2: Status buttons (SMS/Call не поддерживаются как URL в Telegram)
+            # Row 2: Only "Готово" button
             [
-                InlineKeyboardButton("📞 Позвонил", callback_data=f"contact_call_{row_number}"),
                 InlineKeyboardButton("✅ Готово", callback_data=f"contact_done_{row_number}"),
             ],
         ]
@@ -617,16 +632,16 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"📭 Заказов за {yesterday} нет")
         return
     
-    await update.message.reply_text(f"📅 Заказы за {yesterday}:\n\nНажмите на заказ для действий:")
+    await update.message.reply_text(f"📅 *Вчера ({yesterday}):* {len(orders)} шт.", parse_mode="Markdown")
     
     # Send each order as a separate message with buttons
     for row_num, order in orders:
         status_icon = order.contact_status if order.contact_status else "❌ Не обработан"
-        
+        phone_display = f"+{order.phone.lstrip('+')}"
         text = (
-            f"📦 #{order.order_number}\n"
+            f"📦 *Заказ #{order.order_number}*\n"
             f"💊 {order.products}\n"
-            f"📞 {order.phone}\n"
+            f"📞 {phone_display}\n"
             f"📅 {order.date}\n"
             f"📋 {status_icon}"
         )
@@ -637,7 +652,7 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             keyboard = get_reset_keyboard(row_num)
         
-        await update.message.reply_text(text, reply_markup=keyboard)
+        await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
 
 async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -652,9 +667,33 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
         return False  # Not a contact callback
     
     parts = data.split("_")
-    action = parts[1]  # call, sms, wa, tg, max, reset
+    action = parts[1]  # done, call, max, reset
     row_num = int(parts[2])
     
+    # Extract phone from message - look for the line with the phone icon
+    old_text = query.message.text
+    lines = old_text.split("\n")
+    phone = ""
+    for line in lines:
+        if "📞" in line or "☎️" in line:
+            # Extract only digits
+            phone = "".join(c for c in line if c.isdigit())
+            break
+    
+    # Clean phone for links (digits only, ensuring it's the full number)
+    phone_digits = phone if phone else ""
+    
+    # Special handling for Max - just send copyable number + Open button
+    if action == "max":
+        keyboard = [[InlineKeyboardButton("🚀 Открыть Max", url="https://max.ru/im")]]
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"📱 `+{phone_digits}`\n\n1. Нажми на номер (он скопируется)\n2. Жми кнопку ниже 👇",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return True
+
     now = datetime.now().strftime("%d.%m %H:%M")
     
     status_map = {
@@ -668,19 +707,7 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
     # Update in Google Sheets
     update_contact_status(sheet, row_num, new_status)
     
-    # Extract phone from message
-    old_text = query.message.text
-    lines = old_text.split("\n")
-    phone = ""
-    for line in lines:
-        if line.startswith("📞"):
-            phone = line.replace("📞 ", "").replace("+", "").replace(" ", "").strip()
-            break
-    
-    # Clean phone for links (digits only)
-    phone_digits = ''.join(c for c in phone if c.isdigit())
-    
-    # Replace the status line
+    # Replace the status line in message
     new_lines = []
     for line in lines:
         if line.startswith("📋"):
@@ -696,7 +723,7 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
     else:
         keyboard = get_reset_keyboard(row_num)
     
-    await query.edit_message_text(new_text, reply_markup=keyboard)
+    await query.edit_message_text(new_text, reply_markup=keyboard, parse_mode="Markdown")
     
     return True
 
@@ -734,6 +761,23 @@ def main():
     async def run_all():
         # Start API server
         await start_web_server(app)
+        
+        # Setup scheduler for daily reminders
+        scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+        admin_id = int(config.telegram_admin_id.split(',')[0].strip())
+        
+        # Schedule daily reminder at 12:00
+        scheduler.add_job(
+            send_daily_reminder,
+            'cron',
+            hour=12,
+            minute=0,
+            args=[app.bot, sheet, admin_id],
+            id='daily_reminder',
+            replace_existing=True
+        )
+        scheduler.start()
+        logger.info("⏰ Планировщик запущен: напоминание в 12:00 ежедневно")
         
         # Start bot polling
         async with app:
