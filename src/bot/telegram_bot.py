@@ -424,6 +424,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_today_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's orders with contact action buttons."""
+    # Prevent duplicate calls within 3 seconds
+    import time
+    last_call = context.user_data.get('_last_today_call', 0)
+    now = time.time()
+    if now - last_call < 3:
+        return  # Skip duplicate
+    context.user_data['_last_today_call'] = now
+    
     sheet = context.bot_data['sheet']
     
     # Get today's date
