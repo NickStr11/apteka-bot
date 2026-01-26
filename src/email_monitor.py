@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from parsers import parse_html, parse_pdf_bytes, parse_docx_bytes
 from extractors import extract_phone, extract_order_number
+import re
+from bs4 import BeautifulSoup
 
 
 @dataclass
@@ -32,6 +34,8 @@ class OrderData:
     """Extracted order data."""
     order_number: str | None
     phone: str | None
+    products: list[str]  # List of product names
+    total: float  # Total sum
     source_subject: str
 
 
@@ -116,6 +120,57 @@ def extract_text_from_email(msg: Message) -> tuple[str, str, str]:
                 plain_text = text
     
     return plain_text, html_text, attachments_text
+
+
+def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]:
+    """
+    Parse Katren/apteka.ru email to extract phone, products, and total.
+    
+    Returns:
+        Tuple of (phone, products_list, total)
+    """
+    phone = None
+    products = []
+    total = 0.0
+    
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        text = soup.get_text()
+        
+        # Extract phone - look for "Телефон клиента:" pattern
+        phone_match = re.search(r'Телефон\s*клиента[:\s]*\+?(\d[\d\s\-]+)', text, re.IGNORECASE)
+        if phone_match:
+            phone = re.sub(r'[\s\-]', '', phone_match.group(1))
+            if not phone.startswith('7') and len(phone) == 10:
+                phone = '7' + phone
+        
+        # Extract products from table
+        tables = soup.find_all('table')
+        for table in tables:
+            rows = table.find_all('tr')
+            for row in rows:
+                cells = row.find_all(['td', 'th'])
+                if len(cells) >= 2:
+                    first_cell = cells[0].get_text(strip=True).upper()
+                    # Skip header rows and summary rows
+                    if first_cell and first_cell != 'ТОВАР' and first_cell != 'ИТОГО:':
+                        # Check if it looks like a product name (has letters)
+                        if re.search(r'[А-ЯA-Z]{3,}', first_cell):
+                            products.append(first_cell[:100])  # Limit length
+        
+        # Extract total - look for ИТОГО row
+        total_match = re.search(r'ИТОГО[:\s]*[\d\s]*[,.]?\s*(\d+[\s,.]?\d*)', text, re.IGNORECASE)
+        if total_match:
+            total_str = total_match.group(1).replace(' ', '').replace(',', '.')
+            try:
+                total = float(total_str)
+            except ValueError:
+                pass
+                
+    except Exception:
+        pass
+    
+    return phone, products, total
 
 
 class EmailMonitor:
@@ -223,21 +278,28 @@ class EmailMonitor:
             email_content: Parsed email content
             
         Returns:
-            OrderData with extracted phone and order number
+            OrderData with extracted phone, products, and total
         """
-        # Combine all text sources for extraction
-        full_text = "\n".join([
-            email_content.subject,
-            email_content.body_text,
-            email_content.attachments_text,
-        ])
+        # Try Katren parser first (for HTML emails)
+        phone, products, total = parse_katren_email(email_content.raw_body)
         
-        phone = extract_phone(full_text)
-        order_number = extract_order_number(full_text)
+        # Fallback to basic extraction if Katren parser didn't find phone
+        if not phone:
+            full_text = "\n".join([
+                email_content.subject,
+                email_content.body_text,
+                email_content.attachments_text,
+            ])
+            phone = extract_phone(full_text)
+        
+        # Extract order number from subject
+        order_number = extract_order_number(email_content.subject)
         
         return OrderData(
             order_number=order_number,
             phone=phone,
+            products=products,
+            total=total,
             source_subject=email_content.subject,
         )
 

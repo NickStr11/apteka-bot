@@ -797,29 +797,48 @@ def main():
             
             # Add order to sheet
             now = datetime.now()
+            products_str = ", ".join(order_data.products[:5]) if order_data.products else "(из письма)"
             order_row = OrderRow(
                 date=now.strftime("%d.%m.%Y %H:%M"),
                 order_number=order_data.order_number or "#Email",
                 phone=order_data.phone,
-                products="(из письма)",
-                total=0,
+                products=products_str[:200],  # Limit length
+                total=order_data.total,
                 note="📧 Email",
             )
             row_num = add_order(sheet, order_row)
-            logger.info(f"📧 Заказ из email добавлен: {order_data.phone}")
+            logger.info(f"📧 Заказ из email добавлен: {order_data.phone}, товаров: {len(order_data.products)}")
+            
+            # Build notification message
+            phone_display = f"+{order_data.phone.lstrip('+')}"
+            msg_lines = [
+                f"📧 **Новый заказ из почты!**\n",
+                f"📱 {phone_display}",
+            ]
+            
+            if order_data.order_number:
+                msg_lines.append(f"📋 #{order_data.order_number}")
+            
+            if order_data.products:
+                msg_lines.append("\n🛒 **Товары:**")
+                for product in order_data.products[:5]:
+                    msg_lines.append(f"• {product[:50]}")
+                if len(order_data.products) > 5:
+                    msg_lines.append(f"_...и ещё {len(order_data.products) - 5}_")
+            
+            if order_data.total > 0:
+                msg_lines.append(f"\n💰 **Итого:** {order_data.total:.0f} ₽")
             
             # Notify admin
             try:
-                phone_display = f"+{order_data.phone.lstrip('+')}"
                 await app.bot.send_message(
                     chat_id=admin_id,
-                    text=f"📧 **Новый заказ из почты!**\n\n"
-                         f"📱 {phone_display}\n"
-                         f"📋 Тема: {order_data.source_subject[:50]}...",
+                    text="\n".join(msg_lines),
                     parse_mode="Markdown"
                 )
             except Exception as e:
                 logger.error(f"❌ Ошибка уведомления: {e}")
+
         
         # Start email monitor if configured
         if config.email_host and config.email_user and config.email_password:
