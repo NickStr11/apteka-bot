@@ -36,6 +36,9 @@ class Config:
     
     # Notification
     notification_message: str
+    
+    # Phone blacklist (comma-separated)
+    ignore_phones: list[str]
 
 
 def load_config(env_path: str | Path | None = None) -> Config:
@@ -71,4 +74,8 @@ def load_config(env_path: str | Path | None = None) -> Config:
             "NOTIFICATION_MESSAGE",
             "Ваш заказ №{order_number} готов к выдаче!"
         ),
+        
+        ignore_phones=[
+            p.strip() for p in os.getenv("IGNORE_PHONES", "").split(",") if p.strip()
+        ],
     )

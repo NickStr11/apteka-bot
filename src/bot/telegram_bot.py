@@ -787,6 +787,14 @@ def main():
                 logger.warning(f"📧 Письмо без телефона: {order_data.source_subject}")
                 return
             
+            # Check blacklist - normalize phone for comparison
+            phone_normalized = order_data.phone.lstrip('+').replace(' ', '').replace('-', '')
+            for ignored in config.ignore_phones:
+                ignored_normalized = ignored.lstrip('+').replace(' ', '').replace('-', '')
+                if phone_normalized.endswith(ignored_normalized) or ignored_normalized.endswith(phone_normalized):
+                    logger.info(f"📧 Пропускаем свой номер: {order_data.phone}")
+                    return
+            
             # Add order to sheet
             now = datetime.now()
             order_row = OrderRow(
