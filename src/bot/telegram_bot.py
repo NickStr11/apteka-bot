@@ -532,6 +532,13 @@ async def start_web_server(app_tg):
     resource = app_web.router.add_resource("/api/order")
     cors.add(resource.add_route("POST", api_handle_order))
     
+    # Health check endpoint for cron pings
+    async def health_check(request):
+        return web.Response(text="OK", status=200)
+    
+    health_resource = app_web.router.add_resource("/health")
+    cors.add(health_resource.add_route("GET", health_check))
+    
     runner = web.AppRunner(app_web)
     await runner.setup()
     
