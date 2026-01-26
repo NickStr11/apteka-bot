@@ -138,35 +138,57 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
         soup = BeautifulSoup(html_content, 'html.parser')
         text = soup.get_text()
         
-        # Extract phone - look for "Телефон клиента:" pattern
-        phone_match = re.search(r'Телефон\s*клиента[:\s]*\+?(\d[\d\s\-]+)', text, re.IGNORECASE)
+        # Extract phone - look for "Телефон клиента:" pattern with mobile number
+        # Mobile numbers start with +7 or 8, followed by 9xx (mobile prefix)
+        phone_match = re.search(
+            r'Телефон\s*клиента[:\s]*\+?([78]?\d{10})', 
+            text, 
+            re.IGNORECASE
+        )
         if phone_match:
-            phone = re.sub(r'[\s\-]', '', phone_match.group(1))
-            if not phone.startswith('7') and len(phone) == 10:
+            phone = phone_match.group(1)
+            # Normalize to 7XXXXXXXXXX format
+            phone = re.sub(r'[\s\-\(\)]', '', phone)
+            if phone.startswith('8') and len(phone) == 11:
+                phone = '7' + phone[1:]
+            elif len(phone) == 10:
                 phone = '7' + phone
         
-        # Extract products from table
+        # Extract products from table - look for rows with product data
         tables = soup.find_all('table')
         for table in tables:
             rows = table.find_all('tr')
             for row in rows:
                 cells = row.find_all(['td', 'th'])
                 if len(cells) >= 2:
-                    first_cell = cells[0].get_text(strip=True).upper()
-                    # Skip header rows and summary rows
-                    if first_cell and first_cell != 'ТОВАР' and first_cell != 'ИТОГО:':
-                        # Check if it looks like a product name (has letters)
-                        if re.search(r'[А-ЯA-Z]{3,}', first_cell):
-                            products.append(first_cell[:100])  # Limit length
+                    first_cell_text = cells[0].get_text(strip=True)
+                    # Skip headers and summary rows
+                    if first_cell_text.upper() in ['ТОВАР', 'ИТОГО', 'ИТОГО:']:
+                        continue
+                    # Check if it looks like a product (has Cyrillic letters and numbers)
+                    if re.search(r'[А-Яа-яЁё]{3,}', first_cell_text) and len(first_cell_text) > 5:
+                        # Clean up product name
+                        product_name = first_cell_text.strip()[:80]
+                        if product_name and product_name not in products:
+                            products.append(product_name)
         
-        # Extract total - look for ИТОГО row
-        total_match = re.search(r'ИТОГО[:\s]*[\d\s]*[,.]?\s*(\d+[\s,.]?\d*)', text, re.IGNORECASE)
-        if total_match:
-            total_str = total_match.group(1).replace(' ', '').replace(',', '.')
-            try:
-                total = float(total_str)
-            except ValueError:
-                pass
+        # Extract total - look for "Сумма для клиента" column value or ИТОГО row
+        # First try to find the last numeric value in ИТОГО row
+        total_patterns = [
+            r'ИТОГО[:\s]*.*?(\d+(?:[,\.]\d+)?)\s*$',  # ИТОГО at end
+            r'Сумма для клиента[:\s]*(\d+(?:[,\.]\d+)?)',  # Column header
+        ]
+        
+        for pattern in total_patterns:
+            total_match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if total_match:
+                total_str = total_match.group(1).replace(',', '.').replace(' ', '')
+                try:
+                    total = float(total_str)
+                    if total > 0:
+                        break
+                except ValueError:
+                    pass
                 
     except Exception:
         pass
