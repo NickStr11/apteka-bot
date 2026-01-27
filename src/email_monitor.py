@@ -361,15 +361,27 @@ async def monitor_loop(
         callback: Async callback function(OrderData) for processing
         check_interval: Seconds between checks
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"📧 Email monitor started, checking every {check_interval}s")
+    logger.info(f"📧 Host: {monitor.host}, User: {monitor.user}, Folder: {monitor.folder}")
+    logger.info(f"📧 From filter: '{monitor.from_filter}', Since: {monitor.since_date}")
+    
     while True:
         try:
+            logger.info("📧 Checking for new emails...")
             emails = monitor.fetch_unread_emails()
+            logger.info(f"📧 Found {len(emails)} unread email(s)")
             
             for email_content in emails:
+                logger.info(f"📧 Processing: {email_content.subject[:50]}...")
                 order_data = monitor.process_email(email_content)
+                logger.info(f"📧 Extracted phone: {order_data.phone}, products: {len(order_data.products)}")
                 await callback(order_data)
                 
-        except Exception:
+        except Exception as e:
+            logger.error(f"📧 Error in monitor loop: {e}")
             # Reconnect on error
             monitor.disconnect()
             
