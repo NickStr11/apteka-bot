@@ -168,33 +168,43 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
                 if len(cells) >= 2:
                     first_cell_text = cells[0].get_text(strip=True)
                     # Skip headers and summary rows
-                    skip_words = ['ТОВАР', 'ИТОГО', 'ИТОГО:', 'НАИМЕНОВАНИЕ', 'НАЗВАНИЕ', 'СУММА']
+                    skip_words = ['ТОВАР', 'ИТОГО', 'ИТОГО:', 'НАИМЕНОВАНИЕ', 'НАЗВАНИЕ', 'СУММА', 'ПРОИЗВОДИТЕЛЬ', 'КОЛ-ВО', 'ЦЕНА']
                     if any(w in first_cell_text.upper() for w in skip_words):
                         continue
-                    # Check if it looks like a product (has Cyrillic letters)
-                    if re.search(r'[А-Яа-яЁё]{3,}', first_cell_text) and len(first_cell_text) > 5:
-                        # Clean up product name
+                    # Skip empty or very short cells
+                    if len(first_cell_text) < 5:
+                        continue
+                    # Check if it looks like a product:
+                    # - Has Latin brand name (BIODERMA, VICHY, etc)
+                    # - OR has Cyrillic letters
+                    # - AND has numbers (like 1000МЛ, 500МЛ)
+                    is_brand = bool(re.search(r'[A-Z]{3,}', first_cell_text))  # Latin brand
+                    is_cyrillic = bool(re.search(r'[А-Яа-яЁё]{3,}', first_cell_text))  # Cyrillic
+                    has_measure = bool(re.search(r'\d+\s*(МЛ|МГ|ШТ|Г|ML|MG)', first_cell_text, re.IGNORECASE))
+                    
+                    if (is_brand or is_cyrillic) and has_measure:
+                        # Clean up product name - keep it readable
                         product_name = first_cell_text.strip()[:100]
                         if product_name and product_name not in products:
                             products.append(product_name)
-                            logger.info(f"📧 Found product: {product_name[:40]}...")
+                            logger.info(f"📧 Found product: {product_name[:50]}...")
         
         # Fallback: look for product-like patterns in text if no table products found
         if not products:
             logger.info("📧 No table products found, trying text patterns...")
-            # Look for lines that look like product names (Cyrillic, numbers, common drug patterns)
+            # Look for lines that look like product names (brands + measurements)
             lines = text.split('\n')
             for line in lines:
                 line = line.strip()
-                # Skip short lines, headers, and common non-product patterns
+                # Skip short lines, headers
                 if len(line) < 10 or len(line) > 120:
                     continue
-                # Product patterns: Cyrillic words + numbers (like "Крем 50мл" or "Таблетки 10шт")
-                if re.search(r'[А-Яа-яЁё]{4,}.*\d+\s*(мл|мг|шт|г|таб|капс)', line, re.IGNORECASE):
+                # Product patterns: brand names + measurements
+                if re.search(r'(BIODERMA|VICHY|AVENE|LA ROCHE|DUCRAY|[А-Яа-яЁё]{4,}).*\d+\s*(мл|мг|шт|г|ml|mg)', line, re.IGNORECASE):
                     product_name = line.strip()[:100]
                     if product_name and product_name not in products:
                         products.append(product_name)
-                        logger.info(f"📧 Found product from text: {product_name[:40]}...")
+                        logger.info(f"📧 Found product from text: {product_name[:50]}...")
                         if len(products) >= 10:
                             break
         
