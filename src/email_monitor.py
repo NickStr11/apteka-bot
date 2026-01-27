@@ -247,55 +247,71 @@ class EmailMonitor:
         
         emails: list[EmailContent] = []
         
-        # Support multiple senders (comma-separated)
-        senders = [s.strip() for s in self.from_filter.split(",")]
+        # Support multiple senders (comma-separated) or empty filter
+        senders = [s.strip() for s in self.from_filter.split(",") if s.strip()]
         
-        for filter_sender in senders:
-            # SINCE filter uses DD-MMM-YYYY format (e.g., 26-Jan-2026)
-            since_str = self.since_date.strftime("%d-%b-%Y")
-            search_criteria = f'(UNSEEN SINCE {since_str} FROM "{filter_sender}")'
+        # SINCE filter uses DD-MMM-YYYY format (e.g., 26-Jan-2026)
+        since_str = self.since_date.strftime("%d-%b-%Y")
+        
+        if not senders:
+            # If no senders specified, fetch all unread emails since today
+            search_criteria = f'(UNSEEN SINCE {since_str})'
+            emails.extend(self._search_and_fetch(search_criteria))
+        else:
+            # Search for each filter
+            for filter_sender in senders:
+                search_criteria = f'(UNSEEN SINCE {since_str} FROM "{filter_sender}")'
+                emails.extend(self._search_and_fetch(search_criteria))
+        
+        return emails
+
+    def _search_and_fetch(self, search_criteria: str) -> list[EmailContent]:
+        """Helper to search and fetch emails by criteria."""
+        emails: list[EmailContent] = []
+        if not self._connection:
+            return emails
             
-            try:
-                _, message_numbers = self._connection.search(None, search_criteria)
-                
-                for num in message_numbers[0].split():
-                    try:
-                        _, msg_data = self._connection.fetch(num, "(RFC822)")
-                        
-                        if not msg_data or not msg_data[0]:
-                            continue
-                        
-                        raw_email = msg_data[0][1]
-                        if isinstance(raw_email, bytes):
-                            msg = email.message_from_bytes(raw_email)
-                        else:
-                            continue
-                        
-                        subject = decode_email_header(msg.get("Subject"))
-                        sender = decode_email_header(msg.get("From"))
-                        
-                        plain_text, html_text, attachments = extract_text_from_email(msg)
-                        
-                        # Prefer plain text, fall back to HTML
-                        body = plain_text if plain_text.strip() else html_text
-                        
-                        emails.append(EmailContent(
-                            subject=subject,
-                            sender=sender,
-                            body_text=body,
-                            attachments_text=attachments,
-                            raw_body=plain_text + "\n" + html_text,
-                        ))
-                        
-                        # Mark as read
-                        self._connection.store(num, "+FLAGS", "\\Seen")
-                        
-                    except Exception:
+        try:
+            _, message_numbers = self._connection.search(None, search_criteria)
+            
+            for num in message_numbers[0].split():
+                try:
+                    _, msg_data = self._connection.fetch(num, "(RFC822)")
+                    
+                    if not msg_data or not msg_data[0]:
                         continue
-                        
-            except Exception:
-                pass
-        
+                    
+                    raw_email = msg_data[0][1]
+                    if isinstance(raw_email, bytes):
+                        msg = email.message_from_bytes(raw_email)
+                    else:
+                        continue
+                    
+                    subject = decode_email_header(msg.get("Subject"))
+                    sender = decode_email_header(msg.get("From"))
+                    
+                    plain_text, html_text, attachments = extract_text_from_email(msg)
+                    
+                    # Prefer plain text, fall back to HTML
+                    body = plain_text if plain_text.strip() else html_text
+                    
+                    emails.append(EmailContent(
+                        subject=subject,
+                        sender=sender,
+                        body_text=body,
+                        attachments_text=attachments,
+                        raw_body=plain_text + "\n" + html_text,
+                    ))
+                    
+                    # Mark as read
+                    self._connection.store(num, "+FLAGS", "\\Seen")
+                    
+                except Exception:
+                    continue
+                    
+        except Exception:
+            pass
+            
         return emails
     
     def process_email(self, email_content: EmailContent) -> OrderData:
