@@ -130,6 +130,9 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
     Returns:
         Tuple of (phone, products_list, total)
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     phone = None
     products = []
     total = 0.0
@@ -156,6 +159,8 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
         
         # Extract products from table - look for rows with product data
         tables = soup.find_all('table')
+        logger.info(f"📧 Found {len(tables)} tables in email")
+        
         for table in tables:
             rows = table.find_all('tr')
             for row in rows:
@@ -163,20 +168,42 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
                 if len(cells) >= 2:
                     first_cell_text = cells[0].get_text(strip=True)
                     # Skip headers and summary rows
-                    if first_cell_text.upper() in ['ТОВАР', 'ИТОГО', 'ИТОГО:']:
+                    skip_words = ['ТОВАР', 'ИТОГО', 'ИТОГО:', 'НАИМЕНОВАНИЕ', 'НАЗВАНИЕ', 'СУММА']
+                    if any(w in first_cell_text.upper() for w in skip_words):
                         continue
-                    # Check if it looks like a product (has Cyrillic letters and numbers)
+                    # Check if it looks like a product (has Cyrillic letters)
                     if re.search(r'[А-Яа-яЁё]{3,}', first_cell_text) and len(first_cell_text) > 5:
                         # Clean up product name
-                        product_name = first_cell_text.strip()[:80]
+                        product_name = first_cell_text.strip()[:100]
                         if product_name and product_name not in products:
                             products.append(product_name)
+                            logger.info(f"📧 Found product: {product_name[:40]}...")
+        
+        # Fallback: look for product-like patterns in text if no table products found
+        if not products:
+            logger.info("📧 No table products found, trying text patterns...")
+            # Look for lines that look like product names (Cyrillic, numbers, common drug patterns)
+            lines = text.split('\n')
+            for line in lines:
+                line = line.strip()
+                # Skip short lines, headers, and common non-product patterns
+                if len(line) < 10 or len(line) > 120:
+                    continue
+                # Product patterns: Cyrillic words + numbers (like "Крем 50мл" or "Таблетки 10шт")
+                if re.search(r'[А-Яа-яЁё]{4,}.*\d+\s*(мл|мг|шт|г|таб|капс)', line, re.IGNORECASE):
+                    product_name = line.strip()[:100]
+                    if product_name and product_name not in products:
+                        products.append(product_name)
+                        logger.info(f"📧 Found product from text: {product_name[:40]}...")
+                        if len(products) >= 10:
+                            break
         
         # Extract total - look for "Сумма для клиента" column value or ИТОГО row
-        # First try to find the last numeric value in ИТОГО row
         total_patterns = [
-            r'ИТОГО[:\s]*.*?(\d+(?:[,\.]\d+)?)\s*$',  # ИТОГО at end
-            r'Сумма для клиента[:\s]*(\d+(?:[,\.]\d+)?)',  # Column header
+            r'ИТОГО[:\s]*.*?(\d+(?:[,\.]\d+)?)\s*(?:₽|руб|р\.?)?',
+            r'Сумма для клиента[:\s]*(\d+(?:[,\.]\d+)?)',
+            r'К оплате[:\s]*(\d+(?:[,\.]\d+)?)',
+            r'Всего[:\s]*(\d+(?:[,\.]\d+)?)\s*(?:₽|руб|р\.?)?',
         ]
         
         for pattern in total_patterns:
@@ -186,13 +213,16 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
                 try:
                     total = float(total_str)
                     if total > 0:
+                        logger.info(f"📧 Found total: {total}")
                         break
                 except ValueError:
                     pass
                 
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"📧 Parse error: {e}")
     
+    logger.info(f"📧 Parse result: phone={phone}, products={len(products)}, total={total}")
     return phone, products, total
 
 
