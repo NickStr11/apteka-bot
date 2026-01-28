@@ -182,7 +182,7 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
                     is_cyrillic = bool(re.search(r'[А-Яа-яЁё]{3,}', first_cell_text))  # Cyrillic
                     # Extended patterns: 1000МЛ, 500МГ, N60, №60, ТАБЛ, КАПС, etc
                     has_measure = bool(re.search(
-                        r'(\d+\s*(МЛ|МГ|ШТ|Г|ML|MG)|N\d+|№\d+|ТАБЛ|КАПС|ОБОЛОЧ|КРЕМ|ГЕЛЬ|МАЗЬ|Р-Р|СИРОП)', 
+                        r'(\d+\s*(МЛ|МГ|ШТ|Г|ML|MG)|N\d+|№\d+|ТАБЛ|КАПС|ОБОЛОЧ|КРЕМ|ГЕЛЬ|МАЗЬ|Р-Р|СИРОП|ПАКЕТ|ПОР|СУПП|СВЕЧИ|ДРАЖЕ|АМПУЛ)', 
                         first_cell_text, 
                         re.IGNORECASE
                     ))
