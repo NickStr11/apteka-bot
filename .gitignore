@@ -10,6 +10,7 @@ ENV/
 credentials.json
 token.json
 google_credentials_path
+photo-gallery-*.json
 
 # Python caches
 __pycache__/
