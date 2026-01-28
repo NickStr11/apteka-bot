@@ -177,10 +177,15 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
                     # Check if it looks like a product:
                     # - Has Latin brand name (BIODERMA, VICHY, etc)
                     # - OR has Cyrillic letters
-                    # - AND has numbers (like 1000МЛ, 500МЛ)
+                    # - AND has drug measurements (МЛ, МГ, N60, ТАБЛ, КАПС, etc)
                     is_brand = bool(re.search(r'[A-Z]{3,}', first_cell_text))  # Latin brand
                     is_cyrillic = bool(re.search(r'[А-Яа-яЁё]{3,}', first_cell_text))  # Cyrillic
-                    has_measure = bool(re.search(r'\d+\s*(МЛ|МГ|ШТ|Г|ML|MG)', first_cell_text, re.IGNORECASE))
+                    # Extended patterns: 1000МЛ, 500МГ, N60, №60, ТАБЛ, КАПС, etc
+                    has_measure = bool(re.search(
+                        r'(\d+\s*(МЛ|МГ|ШТ|Г|ML|MG)|N\d+|№\d+|ТАБЛ|КАПС|ОБОЛОЧ|КРЕМ|ГЕЛЬ|МАЗЬ|Р-Р|СИРОП)', 
+                        first_cell_text, 
+                        re.IGNORECASE
+                    ))
                     
                     if (is_brand or is_cyrillic) and has_measure:
                         # Clean up product name - keep it readable
@@ -199,8 +204,8 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
                 # Skip short lines, headers
                 if len(line) < 10 or len(line) > 120:
                     continue
-                # Product patterns: brand names + measurements
-                if re.search(r'(BIODERMA|VICHY|AVENE|LA ROCHE|DUCRAY|[А-Яа-яЁё]{4,}).*\d+\s*(мл|мг|шт|г|ml|mg)', line, re.IGNORECASE):
+                # Product patterns: brand names + measurements (extended)
+                if re.search(r'(BIODERMA|VICHY|AVENE|LA ROCHE|DUCRAY|[А-Яа-яЁё]{4,}).*([\d]+(мл|мг|шт|г)|N\d+|№\d+|ТАБЛ|КАПС)', line, re.IGNORECASE):
                     product_name = line.strip()[:100]
                     if product_name and product_name not in products:
                         products.append(product_name)
