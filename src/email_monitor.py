@@ -280,6 +280,9 @@ class EmailMonitor:
         Returns:
             List of EmailContent objects
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         if not self._connection:
             self.connect()
         
@@ -290,11 +293,15 @@ class EmailMonitor:
         # Support multiple senders (comma-separated) or empty filter
         senders = [s.strip() for s in self.from_filter.split(",") if s.strip()]
         
+        # Use yesterday's date to catch overnight emails (Render may restart)
         # SINCE filter uses DD-MMM-YYYY format (e.g., 26-Jan-2026)
-        since_str = self.since_date.strftime("%d-%b-%Y")
+        from datetime import timedelta
+        yesterday = date.today() - timedelta(days=1)
+        since_str = yesterday.strftime("%d-%b-%Y")
+        logger.info(f"📧 Searching emails since {since_str}")
         
         if not senders:
-            # If no senders specified, fetch all unread emails since today
+            # If no senders specified, fetch all unread emails
             search_criteria = f'(UNSEEN SINCE {since_str})'
             emails.extend(self._search_and_fetch(search_criteria))
         else:
