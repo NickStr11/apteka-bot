@@ -214,12 +214,13 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
                         if len(products) >= 10:
                             break
         
-        # Extract total - look for "Сумма для клиента" column value or ИТОГО row
+        # Extract total - prioritize "Сумма для клиента" (customer price, not pharmacy price)
         total_patterns = [
-            r'ИТОГО[:\s]*.*?(\d+(?:[,\.]\d+)?)\s*(?:₽|руб|р\.?)?',
-            r'Сумма для клиента[:\s]*(\d+(?:[,\.]\d+)?)',
+            r'Сумма для клиента[:\s]*(\d+(?:[,\.]\d+)?)',  # Priority: customer total
+            r'ИТОГО[:\s]*.*?Сумма для клиента[:\s]*(\d+(?:[,\.]\d+)?)',
             r'К оплате[:\s]*(\d+(?:[,\.]\d+)?)',
             r'Всего[:\s]*(\d+(?:[,\.]\d+)?)\s*(?:₽|руб|р\.?)?',
+            r'ИТОГО[:\s]*.*?(\d+(?:[,\.]\d+)?)\s*(?:₽|руб|р\.?)?',  # Last resort
         ]
         
         for pattern in total_patterns:
