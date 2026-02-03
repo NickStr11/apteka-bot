@@ -181,9 +181,9 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
                     is_brand = bool(re.search(r'[A-Z]{3,}', first_cell_text))  # Latin brand
                     is_cyrillic = bool(re.search(r'[А-Яа-яЁё]{3,}', first_cell_text))  # Cyrillic
                     # Extended patterns: 1000МЛ, 500МГ, N60, №60, ТАБЛ, КАПС, etc
-                    # Also match special product types: ГЛЮКОМЕТР, НАБОР, ТЕСТ-ПОЛОСКИ, БИНТ, ШПРИЦ
+                    # Also match special product types and dosage forms
                     has_measure = bool(re.search(
-                        r'(\d+\s*(МЛ|МГ|ШТ|Г|ML|MG)|N\d+|№\d+|ТАБЛ|КАПС|ОБОЛОЧ|КРЕМ|ГЕЛЬ|МАЗЬ|Р-Р|СИРОП|ПАКЕТ|ПОР|СУПП|СВЕЧИ|ДРАЖЕ|АМПУЛ|ГЛЮКОМЕТР|НАБОР|ТЕСТ.?ПОЛОСК|БИНТ|ШПРИЦ|ПЛАСТЫР|ГРАДУСНИК|ТОНОМЕТР|ИНГАЛЯТОР|НЕБУЛАЙЗЕР)', 
+                        r'(\d+[,.]?\d*\s*(МЛ|МГ|ШТ|Г|ML|MG)|N\d+|№\d+|ТАБЛ|КАПС|ОБОЛОЧ|КРЕМ|ГЕЛЬ|МАЗЬ|Р-Р|СИРОП|ПАКЕТ|ПОР|СУПП|СВЕЧИ|ДРАЖЕ|АМПУЛ|ГЛЮКОМЕТР|НАБОР|ТЕСТ.?ПОЛОСК|БИНТ|ШПРИЦ|ПЛАСТЫР|ГРАДУСНИК|ТОНОМЕТР|ИНГАЛЯТОР|НЕБУЛАЙЗЕР|КАПЛИ|РАСТВОР|СПРЕЙ|ЛОСЬОН|ЭМУЛЬС|БАЛЬЗАМ|ПАСТА|ПОРОШОК)', 
                         first_cell_text, 
                         re.IGNORECASE
                     ))
