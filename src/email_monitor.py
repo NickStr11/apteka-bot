@@ -290,8 +290,10 @@ class EmailMonitor:
         import logging
         logger = logging.getLogger(__name__)
         
-        if not self._connection:
-            self.connect()
+        # Always reconnect to avoid stale connections
+        self.disconnect()
+        self.connect()
+        logger.info("📧 Connected to IMAP server")
         
         assert self._connection is not None
         
