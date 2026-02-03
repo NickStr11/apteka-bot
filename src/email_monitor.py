@@ -215,12 +215,10 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
                             break
         
         # Extract total - prioritize "Сумма для клиента" (customer price, not pharmacy price)
+        # In Katren emails, the last number in ИТОГО row is the customer price
         total_patterns = [
-            r'Сумма для клиента[:\s]*(\d+(?:[,\.]\d+)?)',  # Priority: customer total
-            r'ИТОГО[:\s]*.*?Сумма для клиента[:\s]*(\d+(?:[,\.]\d+)?)',
-            r'К оплате[:\s]*(\d+(?:[,\.]\d+)?)',
-            r'Всего[:\s]*(\d+(?:[,\.]\d+)?)\s*(?:₽|руб|р\.?)?',
-            r'ИТОГО[:\s]*.*?(\d+(?:[,\.]\d+)?)\s*(?:₽|руб|р\.?)?',  # Last resort
+            r'Сумма для клиента[:\s]*(\d+(?:[,.]\d+)?)',  # Direct match
+            r'Цена для клиента[:\s]*(\d+(?:[,.]\d+)?)',  # Alternative
         ]
         
         for pattern in total_patterns:
@@ -230,10 +228,25 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
                 try:
                     total = float(total_str)
                     if total > 0:
-                        logger.info(f"📧 Found total: {total}")
+                        logger.info(f"📧 Found total (customer): {total}")
                         break
                 except ValueError:
                     pass
+        
+        # Fallback: find ИТОГО line and take the LAST number (customer price is rightmost column)
+        if total == 0:
+            itogo_match = re.search(r'ИТОГО[:\s]*(.+)', text, re.IGNORECASE)
+            if itogo_match:
+                itogo_line = itogo_match.group(1)
+                # Find all numbers in the ИТОГО line, take the last one
+                numbers = re.findall(r'(\d+(?:[,.]\d+)?)', itogo_line)
+                if numbers:
+                    last_number = numbers[-1].replace(',', '.')
+                    try:
+                        total = float(last_number)
+                        logger.info(f"📧 Found total from ИТОГО (last number): {total}")
+                    except ValueError:
+                        pass
                 
     except Exception as e:
         import logging
