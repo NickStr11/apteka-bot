@@ -198,15 +198,20 @@ def parse_katren_email(html_content: str) -> tuple[str | None, list[str], float]
         # Fallback: look for product-like patterns in text if no table products found
         if not products:
             logger.info("📧 No table products found, trying text patterns...")
-            # Look for lines that look like product names (brands + measurements)
+            # Look for lines that look like product names
             lines = text.split('\n')
             for line in lines:
                 line = line.strip()
-                # Skip short lines, headers
-                if len(line) < 10 or len(line) > 120:
+                # Skip short lines, headers, and known non-product patterns
+                if len(line) < 10 or len(line) > 150:
                     continue
-                # Product patterns: brand names + measurements (extended)
-                if re.search(r'(BIODERMA|VICHY|AVENE|LA ROCHE|DUCRAY|[А-Яа-яЁё]{4,}).*([\d]+(мл|мг|шт|г)|N\d+|№\d+|ТАБЛ|КАПС)', line, re.IGNORECASE):
+                skip_words = ['ИТОГО', 'ПРОИЗВОДИТЕЛЬ', 'КОЛ-ВО', 'ЦЕНА', 'СУММА', 'ТОВАР', 'КЛИЕНТ', 'ТЕЛЕФОН', 'ЗАКАЗ', 'АДРЕС', 'АПТЕК', 'ЗДРАВСТВУЙТЕ', 'УВАЖЕНИЕМ', 'ПУЛЬС', 'КАТРЕН']
+                if any(w in line.upper() for w in skip_words):
+                    continue
+                # Product patterns: Cyrillic text + dosage forms OR measurements
+                # Match: "Бетаметазон-ВЕРТЕКС крем д/наруж прим 0,05 % туба 30 г"
+                if re.search(r'[А-Яа-яЁё]{4,}.*(крем|мазь|гель|табл|капс|сироп|капли|раствор|спрей|порошок|суппозит|свечи|ампул|\d+\s*(мл|мг|г|шт))', line, re.IGNORECASE):
+                    # Clean up the product name - take only the first part before numbers/manufacturer
                     product_name = line.strip()[:100]
                     if product_name and product_name not in products:
                         products.append(product_name)
