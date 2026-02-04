@@ -444,6 +444,12 @@ async def monitor_loop(
             logger.info(f"📧 Found {len(emails)} unread email(s)")
             
             for email_content in emails:
+                # Filter: only process emails with "заказ" in subject (skip spam/bonuses)
+                subject_lower = email_content.subject.lower()
+                if 'заказ' not in subject_lower:
+                    logger.info(f"📧 Skipping non-order email: {email_content.subject[:50]}...")
+                    continue
+                    
                 logger.info(f"📧 Processing: {email_content.subject[:50]}...")
                 order_data = monitor.process_email(email_content)
                 logger.info(f"📧 Extracted phone: {order_data.phone}, products: {len(order_data.products)}")
