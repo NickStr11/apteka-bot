@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Apteka Order Helper",
-    "version": "1.0",
+    "version": "2.0",
     "description": "Быстрое оформление заказа с Apteka.ru",
     "permissions": [
         "activeTab",

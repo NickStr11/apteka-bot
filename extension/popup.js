@@ -1,25 +1,27 @@
 document.addEventListener('DOMContentLoaded', async () => {
     const phoneInput = document.getElementById('phone');
+    const commentInput = document.getElementById('comment');
     const sendBtn = document.getElementById('send-btn');
     const statusDiv = document.getElementById('status');
     const formContainer = document.getElementById('form-container');
 
-    // Load last phone number from local storage
-    chrome.storage.local.get(['lastPhone'], (result) => {
-        if (result.lastPhone) {
-            phoneInput.value = result.lastPhone;
-        }
-    });
+    // Force clear inputs (browser autofill fix)
+    setTimeout(() => {
+        phoneInput.value = '';
+        commentInput.value = '';
+        phoneInput.setAttribute('autocomplete', 'off');
+        commentInput.setAttribute('autocomplete', 'off');
+    }, 100);
 
     sendBtn.addEventListener('click', async () => {
         const phone = phoneInput.value.trim();
-        if (!phone) {
-            showStatus('⚠️ Введите номер телефона', 'error');
+        const comment = commentInput.value.trim();
+        if (!phone && !comment) {
+            showStatus('⚠️ Введите номер телефона или комментарий', 'error');
             return;
         }
 
-        // Save phone to local storage
-        chrome.storage.local.set({ lastPhone: phone });
+
 
         sendBtn.disabled = true;
         const originalText = sendBtn.innerHTML;
@@ -41,7 +43,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const response = await fetch(CONFIG.API_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ phone, url })
+                body: JSON.stringify({ phone, url, comment })
             });
 
             const result = await response.json();

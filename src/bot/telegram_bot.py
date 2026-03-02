@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import load_config
 from database.sheets import get_client, get_sheet, add_order, update_order_row, OrderRow, get_orders_by_date, update_contact_status
 from extractors.phone import extract_phone
-from extractors.apteka_parser import extract_product_from_url
+from extractors.apteka_parser import extract_product_from_url, extract_product_with_price
 from email_monitor import EmailMonitor, monitor_loop
 
 logger = logging.getLogger(__name__)
@@ -388,6 +388,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     query = update.callback_query
     
+    # Check if this is a history period callback
+    if query.data.startswith("history_days_"):
+        await query.answer()
+        days = int(query.data.split("_")[-1])
+        await query.edit_message_text(f"📊 Загружаю за {days} дн...")
+        await show_unprocessed_orders(query.message.chat_id, days, context)
+        return
+
     # Check if this is a contact callback - handle it first
     if query.data.startswith("contact_"):
         await handle_contact_callback(update, context)
@@ -453,7 +461,8 @@ async def show_today_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📦 *Заказ #{order.order_number}*\n"
             f"💊 {order.products}\n"
             f"📞 {phone_display}\n"
-            f"📅 {order.date}\n"
+            f"� {order.note}\n"
+            f"�📅 {order.date}\n"
             f"📋 {status_icon}"
         )
         
@@ -470,24 +479,36 @@ async def api_handle_order(request):
     """Handle incoming order from Chrome extension."""
     try:
         data = await request.json()
-        phone = data.get('phone')
+        phone = data.get('phone', '').strip()
         url = data.get('url')
+        comment = data.get('comment', '').strip()
         
-        if not phone or not url:
-            return web.json_response({'status': 'error', 'message': 'Missing phone or url'}, status=400)
+        if not phone and not comment:
+            return web.json_response({'status': 'error', 'message': 'Missing phone or comment'}, status=400)
+        if not url:
+            return web.json_response({'status': 'error', 'message': 'Missing url'}, status=400)
+
+        # Smart fallback: If phone contains letters and looks like a comment, move it to comment
+        # (User writes "Oleg" in phone field)
+        import re
+        if re.search(r'[a-zA-Zа-яА-ЯёЁ]', phone) and len(re.sub(r'\D', '', phone)) < 5:
+            if not comment:
+                comment = phone
+                phone = ""
         
         # Normalize phone number to 7XXXXXXXXXX format
-        phone = ''.join(c for c in phone if c.isdigit())  # Keep only digits
-        if len(phone) == 10 and phone.startswith('9'):
-            phone = '7' + phone  # 9181234567 -> 79181234567
-        elif len(phone) == 11 and phone.startswith('8'):
-            phone = '7' + phone[1:]  # 89181234567 -> 79181234567
+        if phone:
+            phone = ''.join(c for c in phone if c.isdigit())  # Keep only digits
+            if len(phone) == 10 and phone.startswith('9'):
+                phone = '7' + phone  # 9181234567 -> 79181234567
+            elif len(phone) == 11 and phone.startswith('8'):
+                phone = '7' + phone[1:]  # 89181234567 -> 79181234567
             
-        logger.info(f"🚀 API Order received: {phone} - {url}")
+        logger.info(f"🚀 API Order received: {phone or comment} - {url}")
         
-        # Extract product
-        product = extract_product_from_url(url)
-        if not product:
+        # Extract product with price
+        product_info = extract_product_with_price(url)
+        if not product_info:
             return web.json_response({'status': 'error', 'message': 'Could not parse product from URL'}, status=400)
             
         # Get sheet and config from bot_data
@@ -495,17 +516,22 @@ async def api_handle_order(request):
         sheet = app_tg.bot_data['sheet']
         config = app_tg.bot_data['config']
         
+        # Build note field
+        note = "🌐 Расширение"
+        if comment:
+            note = f"🌐 {comment}"
+        
         # Create order
         order = OrderRow(
             date=datetime.now().strftime("%d.%m.%Y %H:%M"),
-            order_number="Chrome Extension",
+            order_number="Браузер",
             phone=phone,
-            products=product,
-            total=0,
+            products=product_info.name,
+            total=product_info.price,
             wa_status="",
             sms_status="",
             sent="",
-            note="Chrome Расширение",
+            note=note,
         )
         
         # Save to Google Sheets
@@ -513,16 +539,24 @@ async def api_handle_order(request):
         
         # Notify ADMIN in Telegram
         admin_id = int(config.telegram_admin_id.split(',')[0].strip())
+        
+        display_phone = f"+{phone}" if phone else "❌ (Нет номера)"
+        display_comment = f"👤 {comment}" if comment else "👤 (Без комментария)"
+        
+        msg = (
+            f"🌐 **Новый заказ из браузера!**\n\n"
+            f"📞 {display_phone}\n"
+            f"{display_comment}\n"
+            f"💊 {product_info.name}"
+        )
         await app_tg.bot.send_message(
             chat_id=admin_id,
-            text=f"🌐 **Новый заказ из браузера!**\n\n"
-                 f"📞 +{phone}\n"
-                 f"💊 {product}",
+            text=msg,
             parse_mode='Markdown'
         )
 
         
-        return web.json_response({'status': 'ok', 'product': product})
+        return web.json_response({'status': 'ok', 'product': product_info.name})
         
     except Exception as e:
         logger.error(f"❌ API Error: {e}")
@@ -608,11 +642,12 @@ def get_contact_keyboard(row_number: int, phone: str = ""):
     
     if phone_digits:
         keyboard = [
-            # Row 1: Messenger logos (colored circles)
+            # Row 1: Messenger links + SMS
             [
-                InlineKeyboardButton("🟢", url=f"https://wa.me/{phone_digits}"),  # WhatsApp (green)
-                InlineKeyboardButton("🔵", url=f"https://t.me/+{phone_digits}"),  # Telegram (blue)
-                InlineKeyboardButton("🟣", callback_data=f"contact_max_{row_number}"),  # Max (purple)
+                InlineKeyboardButton("🟢", url=f"https://wa.me/{phone_digits}"),  # WhatsApp
+                InlineKeyboardButton("🔵", url=f"https://t.me/+{phone_digits}"),  # Telegram
+                InlineKeyboardButton("🟣", callback_data=f"contact_max_{row_number}"),  # Max
+                InlineKeyboardButton("💬", callback_data=f"contact_sms_{row_number}"),  # SMS
             ],
             # Row 2: Only "Готово" button
             [
@@ -639,26 +674,63 @@ def get_reset_keyboard(row_number: int):
 
 
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show yesterday's orders with contact action buttons."""
+    """Show period selector for unprocessed orders."""
     user_id = update.effective_user.id
     if not is_authorized(user_id):
         await update.message.reply_text("⛔ Доступ запрещён")
         return
-    
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("2 дня", callback_data="history_days_2"),
+            InlineKeyboardButton("3 дня", callback_data="history_days_3"),
+        ]
+    ])
+    await update.message.reply_text(
+        "📊 Необработанные заказы — за сколько дней?",
+        reply_markup=keyboard,
+    )
+
+
+async def show_unprocessed_orders(chat_id: int, days: int, context: ContextTypes.DEFAULT_TYPE):
+    """Show unprocessed orders for the last N days."""
     sheet = context.bot_data['sheet']
-    
-    # Get yesterday's date
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
-    orders = get_orders_by_date(sheet, yesterday)
-    
-    if not orders:
-        await update.message.reply_text(f"📭 Заказов за {yesterday} нет")
+
+    # Collect orders for each day
+    all_unprocessed = []
+    for d in range(1, days + 1):
+        date_str = (datetime.now() - timedelta(days=d)).strftime("%d.%m.%Y")
+        orders = get_orders_by_date(sheet, date_str)
+        for row_num, order in orders:
+            status = order.contact_status or "❌ Не обработан"
+            if "✅" not in status:
+                all_unprocessed.append((row_num, order))
+
+    # Also include today's unprocessed
+    today_str = datetime.now().strftime("%d.%m.%Y")
+    today_orders = get_orders_by_date(sheet, today_str)
+    for row_num, order in today_orders:
+        status = order.contact_status or "❌ Не обработан"
+        if "✅" not in status:
+            all_unprocessed.append((row_num, order))
+
+    if not all_unprocessed:
+        date_from = (datetime.now() - timedelta(days=days)).strftime("%d.%m")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📭 Нет необработанных заказов за последние {days} дн.",
+        )
         return
-    
-    await update.message.reply_text(f"📅 *Вчера ({yesterday}):* {len(orders)} шт.", parse_mode="Markdown")
-    
-    # Send each order as a separate message with buttons
-    for row_num, order in orders:
+
+    date_from = (datetime.now() - timedelta(days=days)).strftime("%d.%m")
+    date_to = datetime.now().strftime("%d.%m")
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"📊 *Необработанные ({date_from}–{date_to}):* {len(all_unprocessed)} шт.",
+        parse_mode="Markdown",
+    )
+
+    for row_num, order in all_unprocessed:
         status_icon = order.contact_status if order.contact_status else "❌ Не обработан"
         phone_display = f"+{order.phone.lstrip('+')}"
         text = (
@@ -668,14 +740,11 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📅 {order.date}\n"
             f"📋 {status_icon}"
         )
-        
-        # If already processed, show reset button; otherwise show action buttons
-        if "❌" in status_icon:
-            keyboard = get_contact_keyboard(row_num, order.phone)
-        else:
-            keyboard = get_reset_keyboard(row_num)
-        
-        await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+        keyboard = get_contact_keyboard(row_num, order.phone)
+        await context.bot.send_message(
+            chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="Markdown",
+        )
 
 
 async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -715,6 +784,36 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
+        return True
+
+    # Special handling for SMS - send via sms-gate.app
+    if action == "sms":
+        config = context.bot_data['config']
+        sms_token = getattr(config, 'smsgateway_api_key', None)
+        if not sms_token:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="❌ SMS не настроен (нет SMSGATEWAY_API_KEY в .env)"
+            )
+            return True
+
+        from senders.sms_gateway import send_sms  # direct import, bypass __init__
+        sms_text = config.notification_message or "Ваш заказ готов к выдаче!"
+        result = await send_sms(phone_digits, sms_text, sms_token)
+
+        if result.success:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"✅ SMS отправлено на +{phone_digits}"
+            )
+            # Update SMS status in sheet
+            from database.sheets import update_order_status
+            update_order_status(sheet, row_num, sms_status=f"✅ {datetime.now().strftime('%d.%m %H:%M')}")
+        else:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"❌ Ошибка SMS: {result.error}"
+            )
         return True
 
     now = datetime.now().strftime("%d.%m %H:%M")

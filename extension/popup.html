@@ -123,9 +123,16 @@
     <h2>💊 Apteka Helper</h2>
     <div class="card">
         <div id="form-container">
-            <label for="phone">Номер телефона клиента</label>
-            <input type="tel" id="phone" placeholder="79184865899" autofocus>
-            <button id="send-btn">🚀 Отправить в Бот</button>
+            <form id="order-form" autocomplete="off">
+                <label for="phone">Номер телефона клиента</label>
+                <input type="tel" id="phone" placeholder="79184865899" autofocus autocomplete="off"
+                    name="phone_field_random_123">
+                <label for="comment">Комментарий / Имя (необязательно)</label>
+                <input type="text" id="comment" placeholder="Иванов Иван" autocomplete="off"
+                    name="comment_field_random_123">
+                <div style="text-align: right; font-size: 10px; color: #ccc; margin-bottom: 5px;">v2.0</div>
+                <button id="send-btn" type="button">🚀 Отправить в Бот</button>
+            </form>
         </div>
         <div id="status"></div>
     </div>
