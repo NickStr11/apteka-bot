@@ -272,6 +272,7 @@ class EmailMonitor:
         folder: str = "INBOX",
         from_filter: str = "apteka.ru",
         since_date: date | None = None,
+        timeout: int = 20,
     ):
         self.host = host
         self.user = user
@@ -280,11 +281,12 @@ class EmailMonitor:
         self.from_filter = from_filter
         # Default to today if not specified
         self.since_date = since_date or date.today()
+        self.timeout = timeout
         self._connection: imaplib.IMAP4_SSL | None = None
     
     def connect(self) -> None:
         """Establish IMAP connection."""
-        self._connection = imaplib.IMAP4_SSL(self.host)
+        self._connection = imaplib.IMAP4_SSL(self.host, timeout=self.timeout)
         self._connection.login(self.user, self.password)
         self._connection.select(self.folder)
     
@@ -445,7 +447,10 @@ async def monitor_loop(
     while True:
         try:
             logger.info("📧 Checking for new emails...")
-            emails = monitor.fetch_unread_emails()
+            emails = await asyncio.wait_for(
+                asyncio.to_thread(monitor.fetch_unread_emails),
+                timeout=max(30, monitor.timeout + 15),
+            )
             logger.info(f"📧 Found {len(emails)} unread email(s)")
             
             for email_content in emails:
@@ -459,7 +464,10 @@ async def monitor_loop(
                 order_data = monitor.process_email(email_content)
                 logger.info(f"📧 Extracted phone: {order_data.phone}, products: {len(order_data.products)}")
                 await callback(order_data)
-                
+
+        except asyncio.TimeoutError:
+            logger.error("Email check timed out; Telegram bot remains active")
+            monitor.disconnect()
         except Exception as e:
             logger.error(f"📧 Error in monitor loop: {e}")
             # Reconnect on error
