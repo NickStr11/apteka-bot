@@ -26,7 +26,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import load_config
-from database.sheets import get_client, get_sheet, add_order, update_order_row, OrderRow, get_orders_by_date, update_contact_status
+from database.sheets import get_client, get_sheet, add_order, update_order_row, OrderRow, get_orders_by_date, update_contact_status, run_sheet_call
 from extractors.phone import extract_phone
 from extractors.apteka_parser import extract_product_from_url, extract_product_with_price
 from email_monitor import EmailMonitor, monitor_loop
@@ -201,22 +201,22 @@ async def process_order_text(text: str, update: Update, context: ContextTypes.DE
     
     try:
         if is_editing and last_row:
-            update_order_row(sheet, last_row, order)
+            await run_sheet_call(update_order_row, sheet, last_row, order)
             context.user_data['is_editing'] = False
-            await update.message.reply_text(
+            await notify_order_saved(update.message,
                 f"🔄 Заказ исправлен!\n\n"
                 f"📞 {phone}\n"
                 f"💊 {product}",
-                reply_markup=get_order_control_keyboard(),
+                reply_markup=get_order_control_keyboard() if context.user_data.get('last_row_index') else get_main_keyboard(),
             )
         else:
-            row_index = add_order(sheet, order)
+            row_index = await run_sheet_call(add_order, sheet, order)
             context.user_data['last_row_index'] = row_index
-            await update.message.reply_text(
+            await notify_order_saved(update.message,
                 f"✅ Заказ сохранён!\n\n"
                 f"📞 {phone}\n"
                 f"💊 {product}",
-                reply_markup=get_order_control_keyboard(),
+                reply_markup=get_order_control_keyboard() if context.user_data.get('last_row_index') else get_main_keyboard(),
             )
     except Exception as e:
         logger.error(f"Ошибка сохранения: {e}")
@@ -270,7 +270,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check for Apteka.ru links
     if 'apteka.ru/product/' in text:
         status_msg = await update.message.reply_text("🔎 Извлекаю данные по ссылке...")
-        product = extract_product_from_url(text)
+        product = await asyncio.to_thread(extract_product_from_url, text)
         if product:
             context.user_data['waiting_for_phone_for_product'] = product
             await status_msg.edit_text(
@@ -304,22 +304,22 @@ async def save_order_to_sheet(phone: str, product: str, update: Update, context:
     
     try:
         if is_editing and last_row:
-            update_order_row(sheet, last_row, order)
+            await run_sheet_call(update_order_row, sheet, last_row, order)
             context.user_data['is_editing'] = False
-            await update.message.reply_text(
+            await notify_order_saved(update.message,
                 f"🔄 Заказ исправлен!\n\n"
                 f"📞 {phone}\n"
                 f"💊 {product}",
-                reply_markup=get_order_control_keyboard(),
+                reply_markup=get_order_control_keyboard() if context.user_data.get('last_row_index') else get_main_keyboard(),
             )
         else:
-            row_index = add_order(sheet, order)
+            row_index = await run_sheet_call(add_order, sheet, order)
             context.user_data['last_row_index'] = row_index
-            await update.message.reply_text(
+            await notify_order_saved(update.message,
                 f"✅ Заказ сохранён!\n\n"
                 f"📞 {phone}\n"
                 f"💊 {product}",
-                reply_markup=get_order_control_keyboard(),
+                reply_markup=get_order_control_keyboard() if context.user_data.get('last_row_index') else get_main_keyboard(),
             )
     except Exception as e:
         logger.error(f"Ошибка сохранения: {e}")
@@ -413,7 +413,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "delete_order":
         if last_row:
             try:
-                delete_order_row(sheet, last_row)
+                await run_sheet_call(delete_order_row, sheet, last_row)
                 context.user_data['last_row_index'] = None
                 await query.edit_message_reply_markup(reply_markup=None)
                 await query.message.reply_text("🗑️ Заказ удалён из таблицы.")
@@ -444,7 +444,7 @@ async def show_today_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Get today's date
     today = datetime.now().strftime("%d.%m.%Y")
-    orders = get_orders_by_date(sheet, today)
+    orders = await run_sheet_call(get_orders_by_date, sheet, today)
     
     if not orders:
         await update.message.reply_text("📭 Сегодня заказов нет")
@@ -473,6 +473,22 @@ async def show_today_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = get_reset_keyboard(row_num)
         
         await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+async def notify_order_saved(message, text, **kwargs):
+    """A delivery failure must not be reported as a failed Sheets write."""
+    try:
+        await message.reply_text(text, **kwargs)
+    except Exception:
+        logger.exception("Order saved; Telegram confirmation failed")
+
+
+async def notify_browser_order(bot, admin_id, text):
+    """Deliver a tracked notification independently of browser request completion."""
+    try:
+        await bot.send_message(chat_id=admin_id, text=text)
+    except Exception:
+        logger.exception("Browser order saved; Telegram notification failed")
 
 
 async def api_handle_order(request):
@@ -507,7 +523,7 @@ async def api_handle_order(request):
         logger.info(f"🚀 API Order received: {phone or comment} - {url}")
         
         # Extract product with price
-        product_info = extract_product_with_price(url)
+        product_info = await asyncio.to_thread(extract_product_with_price, url)
         if not product_info:
             return web.json_response({'status': 'error', 'message': 'Could not parse product from URL'}, status=400)
             
@@ -535,27 +551,29 @@ async def api_handle_order(request):
         )
         
         # Save to Google Sheets
-        row_index = add_order(sheet, order)
+        row_index = await run_sheet_call(add_order, sheet, order)
         
-        # Notify ADMIN in Telegram
-        admin_id = int(config.telegram_admin_id.split(',')[0].strip())
-        
-        display_phone = f"+{phone}" if phone else "❌ (Нет номера)"
-        display_comment = f"👤 {comment}" if comment else "👤 (Без комментария)"
-        
-        msg = (
-            f"🌐 **Новый заказ из браузера!**\n\n"
-            f"📞 {display_phone}\n"
-            f"{display_comment}\n"
-            f"💊 {product_info.name}"
-        )
-        await app_tg.bot.send_message(
-            chat_id=admin_id,
-            text=msg,
-            parse_mode='Markdown'
-        )
+        notification = None
+        try:
+            # Notify ADMIN in Telegram
+            admin_id = int(config.telegram_admin_id.split(',')[0].strip())
 
-        
+            display_phone = f"+{phone}" if phone else "❌ (Нет номера)"
+            display_comment = f"👤 {comment}" if comment else "👤 (Без комментария)"
+
+            msg = (
+                f"🌐 Новый заказ из браузера!\n\n"
+                f"📞 {display_phone}\n"
+                f"{display_comment}\n"
+                f"💊 {product_info.name}"
+            )
+            notification = notify_browser_order(app_tg.bot, admin_id, msg)
+            app_tg.create_task(notification)
+        except Exception:
+            if notification is not None:
+                notification.close()
+            logger.exception("Browser order saved; could not schedule Telegram notification")
+
         return web.json_response({'status': 'ok', 'product': product_info.name})
         
     except Exception as e:
@@ -603,7 +621,7 @@ async def start_web_server(app_tg):
 async def send_daily_reminder(bot, sheet, admin_id: int):
     """Send reminder about unprocessed orders from yesterday."""
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
-    orders = get_orders_by_date(sheet, yesterday)
+    orders = await run_sheet_call(get_orders_by_date, sheet, yesterday)
     
     # Filter unprocessed orders (without "✅" in contact_status)
     unprocessed = [
@@ -700,7 +718,7 @@ async def show_unprocessed_orders(chat_id: int, days: int, context: ContextTypes
     all_unprocessed = []
     for d in range(1, days + 1):
         date_str = (datetime.now() - timedelta(days=d)).strftime("%d.%m.%Y")
-        orders = get_orders_by_date(sheet, date_str)
+        orders = await run_sheet_call(get_orders_by_date, sheet, date_str)
         for row_num, order in orders:
             status = order.contact_status or "❌ Не обработан"
             if "✅" not in status:
@@ -708,7 +726,7 @@ async def show_unprocessed_orders(chat_id: int, days: int, context: ContextTypes
 
     # Also include today's unprocessed
     today_str = datetime.now().strftime("%d.%m.%Y")
-    today_orders = get_orders_by_date(sheet, today_str)
+    today_orders = await run_sheet_call(get_orders_by_date, sheet, today_str)
     for row_num, order in today_orders:
         status = order.contact_status or "❌ Не обработан"
         if "✅" not in status:
@@ -808,7 +826,7 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
             )
             # Update SMS status in sheet
             from database.sheets import update_order_status
-            update_order_status(sheet, row_num, sms_status=f"✅ {datetime.now().strftime('%d.%m %H:%M')}")
+            await run_sheet_call(update_order_status, sheet, row_num, sms_status=f"✅ {datetime.now().strftime('%d.%m %H:%M')}")
         else:
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
@@ -827,7 +845,7 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
     new_status = status_map.get(action, "❌ Не обработан")
     
     # Update in Google Sheets
-    update_contact_status(sheet, row_num, new_status)
+    await run_sheet_call(update_contact_status, sheet, row_num, new_status)
     
     # Replace the status line in message
     new_lines = []
@@ -927,7 +945,7 @@ def main():
                 total=order_data.total,
                 note="📧 Email",
             )
-            row_num = add_order(sheet, order_row)
+            row_num = await run_sheet_call(add_order, sheet, order_row)
             logger.info(f"📧 Заказ из email добавлен: {order_data.phone}, товаров: {len(order_data.products)}")
             
             # Build notification message

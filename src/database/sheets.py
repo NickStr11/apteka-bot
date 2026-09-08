@@ -5,9 +5,25 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 import json
+import re
+import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import gspread
 from google.oauth2.service_account import Credentials
+
+
+logger = logging.getLogger(__name__)
+_SHEETS_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sheets")
+
+
+async def run_sheet_call(function, *args, **kwargs):
+    """Keep blocking Sheets I/O off the event loop and serialize client access."""
+    return await asyncio.get_running_loop().run_in_executor(
+        _SHEETS_EXECUTOR, partial(function, *args, **kwargs)
+    )
 
 
 # Spreadsheet ID from URL
@@ -94,12 +110,12 @@ def get_sheet(client: gspread.Client) -> gspread.Worksheet:
 def add_order(
     sheet: gspread.Worksheet,
     order: OrderRow,
-) -> int:
+) -> int | None:
     """
     Add order to spreadsheet.
     
     Returns:
-        Row number of added order
+        Row number of added order, or None if the successful append lacks metadata
     """
     row_data = [
         order.date,
@@ -114,12 +130,20 @@ def add_order(
         order.contact_status,
     ]
     
-    sheet.append_row(row_data)
-    # Get the row index of the newly added row
-    # (Using sheet.row_count after append is risky if multiple people use it,
-    # but append_row doesn't return the row index directly in gspread 3.x)
-    # A safer way to find the row index in modern gspread:
-    return len(sheet.get_all_values())
+    response = sheet.append_row(row_data)
+    updates = response.get("updates") if isinstance(response, dict) else None
+    updated_range = updates.get("updatedRange") if isinstance(updates, dict) else None
+    match = None
+    if isinstance(updated_range, str):
+        match = re.fullmatch(
+            r"(?:.*!)?\$?[A-Z]+\$?([1-9]\d*):\$?[A-Z]+\$?[1-9]\d*",
+            updated_range,
+        )
+    if match:
+        return int(match.group(1))
+    # The append succeeded. Missing metadata must not trigger a duplicate retry.
+    logger.warning("Order saved, but append response has no usable updatedRange")
+    return None
 
 
 def update_order_row(
