@@ -15,6 +15,10 @@ from unittest.mock import AsyncMock, Mock
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class DeliveryTimedOut(Exception):
+    pass
+
+
 def load_functions(path, names, namespace):
     tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
@@ -29,7 +33,8 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.ns = dict(asyncio=asyncio, partial=partial, _SHEETS_EXECUTOR=self.executor, re=re, logger=Mock(), datetime=datetime)
         load_functions("src/database/sheets.py", {"run_sheet_call", "add_order"}, self.ns)
-        load_functions("src/bot/telegram_bot.py", {"notify_order_saved", "notify_browser_order", "api_handle_order", "save_order_to_sheet"}, self.ns)
+        self.ns["TimedOut"] = DeliveryTimedOut
+        load_functions("src/bot/telegram_bot.py", {"send_telegram_with_retry", "notify_order_saved", "notify_browser_order", "api_handle_order", "save_order_to_sheet", "handle_text"}, self.ns)
         self.ns.update(OrderRow=lambda **kwargs: SimpleNamespace(**kwargs), get_main_keyboard=lambda: "main", get_order_control_keyboard=lambda: "controls")
         self.order = SimpleNamespace(date="date", order_number="order", phone="phone", products="product", total=0, wa_status="", sms_status="", sent="", note="", contact_status="")
 
@@ -151,6 +156,50 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.reply_text.call_args.kwargs["reply_markup"], "main")
         self.assertIsNone(context.user_data["last_row_index"])
         self.ns["logger"].error.assert_not_called()
+
+    async def test_confirmation_retries_without_writing_order_twice(self):
+        self.ns["asyncio"] = SimpleNamespace(sleep=AsyncMock())
+        self.ns["run_sheet_call"] = AsyncMock(return_value=42)
+        message = SimpleNamespace(reply_text=AsyncMock(side_effect=[DeliveryTimedOut(), "delivered"]))
+        context = SimpleNamespace(bot_data={"sheet": object()}, user_data={})
+        await self.ns["save_order_to_sheet"]("70000000000", "Product", SimpleNamespace(message=message), context)
+        self.ns["run_sheet_call"].assert_awaited_once()
+        self.assertEqual(message.reply_text.await_count, 2)
+        self.assertEqual(message.reply_text.call_args_list[0], message.reply_text.call_args_list[1])
+        self.assertEqual(context.user_data["last_row_index"], 42)
+        self.ns["logger"].exception.assert_not_called()
+
+    async def test_delivery_retries_are_bounded(self):
+        sleep = AsyncMock()
+        self.ns["asyncio"] = SimpleNamespace(sleep=sleep)
+        send = AsyncMock(side_effect=DeliveryTimedOut())
+        with self.assertRaises(DeliveryTimedOut):
+            await self.ns["send_telegram_with_retry"](send, "text")
+        self.assertEqual(send.await_count, 3)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [1, 2])
+
+    async def test_delivery_does_not_retry_permanent_error_or_cancellation(self):
+        for error in (ValueError("invalid message"), asyncio.CancelledError()):
+            send = AsyncMock(side_effect=error)
+            with self.assertRaises(type(error)):
+                await self.ns["send_telegram_with_retry"](send, "text")
+            send.assert_awaited_once()
+
+    async def test_new_order_prompt_retries_without_creating_order(self):
+        self.ns["asyncio"] = SimpleNamespace(sleep=AsyncMock())
+        self.ns["is_authorized"] = lambda user_id: True
+        self.ns["process_order_text"] = AsyncMock()
+        message = SimpleNamespace(text="📝 Новый заказ", reply_text=AsyncMock(side_effect=[DeliveryTimedOut(), None]))
+        await self.ns["handle_text"](SimpleNamespace(effective_user=SimpleNamespace(id=1), message=message), SimpleNamespace(user_data={}))
+        self.assertEqual(message.reply_text.await_count, 2)
+        self.ns["process_order_text"].assert_not_awaited()
+
+    async def test_browser_notification_retries(self):
+        self.ns["asyncio"] = SimpleNamespace(sleep=AsyncMock())
+        bot = SimpleNamespace(send_message=AsyncMock(side_effect=[DeliveryTimedOut(), None]))
+        await self.ns["notify_browser_order"](bot, 1, "Saved")
+        self.assertEqual(bot.send_message.await_count, 2)
+        self.ns["logger"].exception.assert_not_called()
 
 
 if __name__ == "__main__":

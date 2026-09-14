@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import TimedOut
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -237,7 +238,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Check for button presses first
     if text == "📝 Новый заказ":
-        await update.message.reply_text(
+        await send_telegram_with_retry(update.message.reply_text,
             "Отправь номер телефона и название препарата:\n"
             "Например: `79991234567 Аспирин`"
         )
@@ -475,10 +476,22 @@ async def show_today_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
 
+async def send_telegram_with_retry(send, *args, **kwargs):
+    """Retry delivery only; never repeat the order write or SMS operation."""
+    for attempt in range(3):
+        try:
+            return await send(*args, **kwargs)
+        except TimedOut:
+            if attempt == 2:
+                raise
+            logger.warning("Telegram delivery timed out; retry %s/2", attempt + 1)
+            await asyncio.sleep(attempt + 1)
+
+
 async def notify_order_saved(message, text, **kwargs):
     """A delivery failure must not be reported as a failed Sheets write."""
     try:
-        await message.reply_text(text, **kwargs)
+        await send_telegram_with_retry(message.reply_text, text, **kwargs)
     except Exception:
         logger.exception("Order saved; Telegram confirmation failed")
 
@@ -486,7 +499,7 @@ async def notify_order_saved(message, text, **kwargs):
 async def notify_browser_order(bot, admin_id, text):
     """Deliver a tracked notification independently of browser request completion."""
     try:
-        await bot.send_message(chat_id=admin_id, text=text)
+        await send_telegram_with_retry(bot.send_message, chat_id=admin_id, text=text)
     except Exception:
         logger.exception("Browser order saved; Telegram notification failed")
 
