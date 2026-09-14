@@ -4,11 +4,12 @@ import logging
 import re
 import sys
 import os
+import uuid
 from pathlib import Path
 from datetime import datetime
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import TimedOut
+from telegram.error import TimedOut, NetworkError, BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -53,13 +54,13 @@ def get_main_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-def get_order_control_keyboard():
+def get_order_control_keyboard(revision):
     """Get keyboard with OK, Delete, Edit buttons (icons only)."""
     keyboard = [
         [
             InlineKeyboardButton("✅", callback_data="confirm_order"),
-            InlineKeyboardButton("❌", callback_data="delete_order"),
-            InlineKeyboardButton("✏️", callback_data="edit_last_order")
+            InlineKeyboardButton("❌", callback_data=f"delete_order:{revision}"),
+            InlineKeyboardButton("✏️", callback_data=f"edit_last_order:{revision}")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -204,20 +205,20 @@ async def process_order_text(text: str, update: Update, context: ContextTypes.DE
         if is_editing and last_row:
             await run_sheet_call(update_order_row, sheet, last_row, order)
             context.user_data['is_editing'] = False
-            await notify_order_saved(update.message,
+            schedule_reply(context, update.message,
                 f"🔄 Заказ исправлен!\n\n"
                 f"📞 {phone}\n"
                 f"💊 {product}",
-                reply_markup=get_order_control_keyboard() if context.user_data.get('last_row_index') else get_main_keyboard(),
+                reply_markup=saved_order_keyboard(context),
             )
         else:
             row_index = await run_sheet_call(add_order, sheet, order)
             context.user_data['last_row_index'] = row_index
-            await notify_order_saved(update.message,
+            schedule_reply(context, update.message,
                 f"✅ Заказ сохранён!\n\n"
                 f"📞 {phone}\n"
                 f"💊 {product}",
-                reply_markup=get_order_control_keyboard() if context.user_data.get('last_row_index') else get_main_keyboard(),
+                reply_markup=saved_order_keyboard(context),
             )
     except Exception as e:
         logger.error(f"Ошибка сохранения: {e}")
@@ -238,7 +239,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Check for button presses first
     if text == "📝 Новый заказ":
-        await send_telegram_with_retry(update.message.reply_text,
+        schedule_reply(context, update.message,
             "Отправь номер телефона и название препарата:\n"
             "Например: `79991234567 Аспирин`"
         )
@@ -307,20 +308,20 @@ async def save_order_to_sheet(phone: str, product: str, update: Update, context:
         if is_editing and last_row:
             await run_sheet_call(update_order_row, sheet, last_row, order)
             context.user_data['is_editing'] = False
-            await notify_order_saved(update.message,
+            schedule_reply(context, update.message,
                 f"🔄 Заказ исправлен!\n\n"
                 f"📞 {phone}\n"
                 f"💊 {product}",
-                reply_markup=get_order_control_keyboard() if context.user_data.get('last_row_index') else get_main_keyboard(),
+                reply_markup=saved_order_keyboard(context),
             )
         else:
             row_index = await run_sheet_call(add_order, sheet, order)
             context.user_data['last_row_index'] = row_index
-            await notify_order_saved(update.message,
+            schedule_reply(context, update.message,
                 f"✅ Заказ сохранён!\n\n"
                 f"📞 {phone}\n"
                 f"💊 {product}",
-                reply_markup=get_order_control_keyboard() if context.user_data.get('last_row_index') else get_main_keyboard(),
+                reply_markup=saved_order_keyboard(context),
             )
     except Exception as e:
         logger.error(f"Ошибка сохранения: {e}")
@@ -388,10 +389,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from database.sheets import delete_order_row
     
     query = update.callback_query
+    if not is_authorized(update.effective_user.id):
+        return
+    if query.data == "confirm_order":
+        schedule_confirmation(context, query)
+        return
+
+    action, _, revision = query.data.partition(':')
+    if action in ("delete_order", "edit_last_order"):
+        if not revision or revision != context.user_data.get('order_revision'):
+            await answer_callback_safely(query)
+            schedule_reply(context, query.message, "Эта кнопка относится к старому заказу. Используй кнопки последнего сохранённого заказа.")
+            return
     
     # Check if this is a history period callback
     if query.data.startswith("history_days_"):
-        await query.answer()
+        await answer_callback_safely(query)
         days = int(query.data.split("_")[-1])
         await query.edit_message_text(f"📊 Загружаю за {days} дн...")
         await show_unprocessed_orders(query.message.chat_id, days, context)
@@ -402,28 +415,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_contact_callback(update, context)
         return
     
-    await query.answer()
+    await answer_callback_safely(query)
     
     last_row = context.user_data.get('last_row_index')
     sheet = context.bot_data['sheet']
     
-    if query.data == "confirm_order":
-        await query.edit_message_reply_markup(reply_markup=None)
-        await query.message.reply_text("🚀 Принято!")
-        
-    elif query.data == "delete_order":
+    if action == "delete_order":
         if last_row:
             try:
                 await run_sheet_call(delete_order_row, sheet, last_row)
                 context.user_data['last_row_index'] = None
-                await query.edit_message_reply_markup(reply_markup=None)
-                await query.message.reply_text("🗑️ Заказ удалён из таблицы.")
+                context.user_data.pop('order_revision', None)
             except Exception as e:
                 await query.message.reply_text(f"❌ Ошибка удаления: {e}")
+                return
+            schedule_reply(context, query.message, "🗑️ Заказ удалён из таблицы.")
         else:
             await query.message.reply_text("❌ Не нашел заказ для удаления.")
             
-    elif query.data == "edit_last_order":
+    elif action == "edit_last_order":
         context.user_data['is_editing'] = True
         await query.message.reply_text(
             "Принято! Отправь правильные данные (текстом или голосом), "
@@ -478,6 +488,8 @@ async def show_today_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_telegram_with_retry(send, *args, **kwargs):
     """Retry delivery only; never repeat the order write or SMS operation."""
+    for name, value in (("connect_timeout", 5), ("read_timeout", 8), ("write_timeout", 8), ("pool_timeout", 2)):
+        kwargs.setdefault(name, value)
     for attempt in range(3):
         try:
             return await send(*args, **kwargs)
@@ -493,7 +505,70 @@ async def notify_order_saved(message, text, **kwargs):
     try:
         await send_telegram_with_retry(message.reply_text, text, **kwargs)
     except Exception:
-        logger.exception("Order saved; Telegram confirmation failed")
+        logger.exception("Telegram response delivery failed")
+
+
+def schedule_reply(context, message, text, **kwargs):
+    """Snapshot response arguments and keep delivery out of the update queue."""
+    delivery = notify_order_saved(message, text, **kwargs)
+    try:
+        context.application.create_task(delivery)
+    except Exception:
+        delivery.close()
+        logger.exception("Could not schedule Telegram response")
+
+
+def saved_order_keyboard(context):
+    # A delayed old keyboard must never edit/delete the current order.
+    revision = uuid.uuid4().hex[:12]
+    context.user_data['order_revision'] = revision
+    return get_order_control_keyboard(revision) if context.user_data.get('last_row_index') else get_main_keyboard()
+
+
+async def answer_callback_safely(query):
+    """A spinner acknowledgement is not a prerequisite for the user's action."""
+    try:
+        await asyncio.wait_for(query.answer(connect_timeout=2, read_timeout=2, write_timeout=2, pool_timeout=1), timeout=2)
+    except (NetworkError, asyncio.TimeoutError):
+        logger.warning("Callback acknowledgement unavailable")
+
+
+async def confirm_saved_message(query):
+    """Confirmation is an idempotent edit of this message, not another order write."""
+    await answer_callback_safely(query)
+    text = query.message.text or "✅ Заказ сохранён!"
+    if not text.endswith("🚀 Принято!"):
+        text += "\n\n🚀 Принято!"
+    async def edit(**kwargs):
+        try:
+            return await query.edit_message_text(text, reply_markup=None, **kwargs)
+        except BadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                raise
+    try:
+        await send_telegram_with_retry(edit)
+    except Exception:
+        logger.exception("Saved-order confirmation edit failed")
+
+
+def schedule_confirmation(context, query):
+    pending = context.bot_data.setdefault('_pending_confirmations', set())
+    key = (query.message.chat_id, query.message.message_id)
+    if key in pending:
+        return
+    pending.add(key)
+    async def deliver():
+        try:
+            await confirm_saved_message(query)
+        finally:
+            pending.discard(key)
+    delivery = deliver()
+    try:
+        context.application.create_task(delivery)
+    except Exception:
+        delivery.close()
+        pending.discard(key)
+        logger.exception("Could not schedule order confirmation")
 
 
 async def notify_browser_order(bot, admin_id, text):
@@ -781,7 +856,7 @@ async def show_unprocessed_orders(chat_id: int, days: int, context: ContextTypes
 async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle contact action button press."""
     query = update.callback_query
-    await query.answer()
+    await answer_callback_safely(query)
     
     data = query.data
     sheet = context.bot_data['sheet']

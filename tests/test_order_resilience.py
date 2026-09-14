@@ -5,17 +5,28 @@ import logging
 import re
 import threading
 import unittest
+import uuid
+import inspect
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class DeliveryTimedOut(Exception):
+class DeliveryNetworkError(Exception):
+    pass
+
+
+class DeliveryBadRequest(DeliveryNetworkError):
+    pass
+
+
+class DeliveryTimedOut(DeliveryNetworkError):
     pass
 
 
@@ -30,13 +41,33 @@ def load_functions(path, names, namespace):
 
 class ResilienceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.tasks = []
         self.executor = ThreadPoolExecutor(max_workers=1)
+        self.delete_order = Mock()
+        modules = patch.dict(sys.modules, {"database": SimpleNamespace(), "database.sheets": SimpleNamespace(delete_order_row=self.delete_order)})
+        modules.start()
+        self.addCleanup(modules.stop)
         self.ns = dict(asyncio=asyncio, partial=partial, _SHEETS_EXECUTOR=self.executor, re=re, logger=Mock(), datetime=datetime)
         load_functions("src/database/sheets.py", {"run_sheet_call", "add_order"}, self.ns)
-        self.ns["TimedOut"] = DeliveryTimedOut
-        load_functions("src/bot/telegram_bot.py", {"send_telegram_with_retry", "notify_order_saved", "notify_browser_order", "api_handle_order", "save_order_to_sheet", "handle_text"}, self.ns)
-        self.ns.update(OrderRow=lambda **kwargs: SimpleNamespace(**kwargs), get_main_keyboard=lambda: "main", get_order_control_keyboard=lambda: "controls")
+        self.ns.update(TimedOut=DeliveryTimedOut, NetworkError=DeliveryNetworkError, BadRequest=DeliveryBadRequest, uuid=uuid, is_authorized=lambda user_id: True)
+        load_functions("src/bot/telegram_bot.py", {"send_telegram_with_retry", "notify_order_saved", "notify_browser_order", "api_handle_order", "save_order_to_sheet", "handle_text", "schedule_reply", "saved_order_keyboard", "answer_callback_safely", "confirm_saved_message", "schedule_confirmation", "handle_callback", "get_order_control_keyboard"}, self.ns)
+        self.ns.update(OrderRow=lambda **kwargs: SimpleNamespace(**kwargs), get_main_keyboard=lambda: "main", InlineKeyboardButton=lambda text, **kwargs: SimpleNamespace(text=text, **kwargs), InlineKeyboardMarkup=lambda rows: rows)
         self.order = SimpleNamespace(date="date", order_number="order", phone="phone", products="product", total=0, wa_status="", sms_status="", sent="", note="", contact_status="")
+
+    def context(self, user_data=None):
+        def track(coro):
+            task = asyncio.create_task(coro)
+            self.tasks.append(task)
+            return task
+        return SimpleNamespace(bot_data={"sheet": object()}, user_data=user_data or {}, application=SimpleNamespace(create_task=track))
+
+    async def drain(self):
+        await asyncio.gather(*self.tasks)
+
+    def callback(self, data="confirm_order", text="Saved", message_id=1):
+        message = SimpleNamespace(chat_id=1, message_id=message_id, text=text, reply_text=AsyncMock())
+        query = SimpleNamespace(data=data, message=message, answer=AsyncMock(), edit_message_text=AsyncMock())
+        return SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=1))
 
     def tearDown(self):
         self.executor.shutdown(wait=True)
@@ -148,8 +179,9 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.ns["OrderRow"] = lambda **kwargs: SimpleNamespace(**kwargs)
         self.ns["add_order"] = Mock(return_value=None)
         message = SimpleNamespace(reply_text=AsyncMock(side_effect=TimeoutError("Telegram unavailable")))
-        context = SimpleNamespace(bot_data={"sheet": object()}, user_data={"last_row_index": 99})
+        context = self.context({"last_row_index": 99})
         await self.ns["save_order_to_sheet"]("70000000000", "Product", SimpleNamespace(message=message), context)
+        await self.drain()
         self.ns["add_order"].assert_called_once()
         message.reply_text.assert_awaited_once()
         self.assertIn("Заказ сохранён", message.reply_text.call_args.args[0])
@@ -161,8 +193,9 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.ns["asyncio"] = SimpleNamespace(sleep=AsyncMock())
         self.ns["run_sheet_call"] = AsyncMock(return_value=42)
         message = SimpleNamespace(reply_text=AsyncMock(side_effect=[DeliveryTimedOut(), "delivered"]))
-        context = SimpleNamespace(bot_data={"sheet": object()}, user_data={})
+        context = self.context()
         await self.ns["save_order_to_sheet"]("70000000000", "Product", SimpleNamespace(message=message), context)
+        await self.drain()
         self.ns["run_sheet_call"].assert_awaited_once()
         self.assertEqual(message.reply_text.await_count, 2)
         self.assertEqual(message.reply_text.call_args_list[0], message.reply_text.call_args_list[1])
@@ -190,7 +223,8 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.ns["is_authorized"] = lambda user_id: True
         self.ns["process_order_text"] = AsyncMock()
         message = SimpleNamespace(text="📝 Новый заказ", reply_text=AsyncMock(side_effect=[DeliveryTimedOut(), None]))
-        await self.ns["handle_text"](SimpleNamespace(effective_user=SimpleNamespace(id=1), message=message), SimpleNamespace(user_data={}))
+        await self.ns["handle_text"](SimpleNamespace(effective_user=SimpleNamespace(id=1), message=message), self.context())
+        await self.drain()
         self.assertEqual(message.reply_text.await_count, 2)
         self.ns["process_order_text"].assert_not_awaited()
 
@@ -200,6 +234,110 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         await self.ns["notify_browser_order"](bot, 1, "Saved")
         self.assertEqual(bot.send_message.await_count, 2)
         self.ns["logger"].exception.assert_not_called()
+
+    async def test_blocked_confirmation_does_not_delay_second_save(self):
+        release, started = asyncio.Event(), asyncio.Event()
+        async def delayed(*args, **kwargs):
+            started.set()
+            await release.wait()
+        first = SimpleNamespace(reply_text=AsyncMock(side_effect=delayed))
+        second = SimpleNamespace(reply_text=AsyncMock())
+        self.ns["run_sheet_call"] = AsyncMock(side_effect=[42, 43])
+        context = self.context()
+        try:
+            await asyncio.wait_for(self.ns["save_order_to_sheet"]("70000000000", "First", SimpleNamespace(message=first), context), .5)
+            await asyncio.wait_for(started.wait(), .5)
+            first_revision = context.user_data["order_revision"]
+            await asyncio.wait_for(self.ns["save_order_to_sheet"]("70000000001", "Second", SimpleNamespace(message=second), context), .5)
+            self.assertEqual(self.ns["run_sheet_call"].await_count, 2)
+            self.assertEqual(context.user_data["last_row_index"], 43)
+            self.assertNotEqual(context.user_data["order_revision"], first_revision)
+            self.assertFalse(self.tasks[0].done())
+            # Already scheduled controls carry the original revision, not later state.
+            self.assertEqual(first.reply_text.call_args.kwargs["reply_markup"][0][1].callback_data, "delete_order:" + first_revision)
+        finally:
+            release.set()
+            await self.drain()
+
+    async def test_pending_and_completed_confirm_are_idempotent(self):
+        release, started = asyncio.Event(), asyncio.Event()
+        async def edit(*args, **kwargs):
+            started.set()
+            await release.wait()
+        context = self.context()
+        update = self.callback()
+        update.callback_query.edit_message_text.side_effect = edit
+        try:
+            await self.ns["handle_callback"](update, context)
+            await asyncio.wait_for(started.wait(), .5)
+            await self.ns["handle_callback"](update, context)
+            self.assertEqual(len(self.tasks), 1)
+        finally:
+            release.set()
+            await self.drain()
+        original_text = update.callback_query.edit_message_text.call_args.args[0]
+        self.assertEqual(original_text.count("🚀 Принято!"), 1)
+        repeated = self.callback(text=original_text)
+        repeated.callback_query.edit_message_text.side_effect = DeliveryBadRequest("Message is not modified")
+        await self.ns["handle_callback"](repeated, context)
+        await self.drain()
+        self.assertEqual(repeated.callback_query.edit_message_text.call_args.args[0], original_text)
+        update.callback_query.message.reply_text.assert_not_awaited()
+        repeated.callback_query.message.reply_text.assert_not_awaited()
+        self.delete_order.assert_not_called()
+        self.ns["logger"].exception.assert_not_called()
+        self.assertFalse(context.bot_data["_pending_confirmations"])
+
+    async def test_callback_ack_timeout_does_not_abort_confirmation(self):
+        update, context = self.callback(), self.context()
+        update.callback_query.answer.side_effect = DeliveryTimedOut()
+        await self.ns["handle_callback"](update, context)
+        await self.drain()
+        update.callback_query.edit_message_text.assert_awaited_once()
+        self.ns["logger"].exception.assert_not_called()
+
+    async def test_unexpected_confirmation_bad_request_is_reported(self):
+        update, context = self.callback(), self.context()
+        update.callback_query.edit_message_text.side_effect = DeliveryBadRequest("Message can't be edited")
+        await self.ns["handle_callback"](update, context)
+        await self.drain()
+        self.ns["logger"].exception.assert_called_once()
+
+    async def test_stale_and_legacy_edit_delete_do_not_mutate_current_order(self):
+        context = self.context({"last_row_index": 43, "order_revision": "current"})
+        self.ns["run_sheet_call"] = AsyncMock()
+        for data in ("delete_order:old", "edit_last_order:old", "delete_order", "edit_last_order"):
+            await self.ns["handle_callback"](self.callback(data), context)
+        await self.drain()
+        self.assertEqual(context.user_data, {"last_row_index": 43, "order_revision": "current"})
+        self.ns["run_sheet_call"].assert_not_awaited()
+        self.delete_order.assert_not_called()
+
+    async def test_delete_storage_once_despite_notification_failure_and_repeat(self):
+        context = self.context({"last_row_index": 43, "order_revision": "current"})
+        update = self.callback("delete_order:current")
+        update.callback_query.message.reply_text.side_effect = RuntimeError("delivery failed")
+        await self.ns["handle_callback"](update, context)
+        await self.drain()
+        await self.ns["handle_callback"](update, context)
+        await self.drain()
+        self.delete_order.assert_called_once_with(context.bot_data["sheet"], 43)
+        self.assertIsNone(context.user_data["last_row_index"])
+        self.assertNotIn("order_revision", context.user_data)
+        self.assertNotIn("Ошибка удаления", update.callback_query.message.reply_text.call_args_list[0].args[0])
+
+    async def test_scheduling_failure_closes_reply_and_confirmation_coroutines(self):
+        context = self.context()
+        captured = []
+        def reject(coro):
+            captured.append(coro)
+            raise RuntimeError("application stopped")
+        context.application.create_task = reject
+        self.ns["schedule_reply"](context, SimpleNamespace(reply_text=AsyncMock()), "Saved")
+        self.ns["schedule_confirmation"](context, self.callback().callback_query)
+        self.assertEqual(len(captured), 2)
+        self.assertTrue(all(inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED for coro in captured))
+        self.assertFalse(context.bot_data["_pending_confirmations"])
 
 
 if __name__ == "__main__":
