@@ -1016,12 +1016,20 @@ async def initialize_with_retry(app, delay=3):
         attempt += 1
         try:
             await app.initialize()
+            app.bot.bot  # RuntimeError, если getMe так и не прошёл
             if attempt > 1:
                 logger.info("Telegram reachable after %s startup attempt(s)", attempt)
             return
-        except NetworkError as e:  # TimedOut is a NetworkError
+        except (NetworkError, RuntimeError) as e:  # TimedOut is a NetworkError
             if attempt == 1 or attempt % 10 == 0:
                 logger.warning("Telegram unreachable at startup (attempt %s): %s", attempt, e)
+            # PTB Bot.initialize помечает себя инициализированным ДО getMe: без сброса
+            # повтор пропустит getMe, и бот упадёт позже с «ExtBot is not properly initialized»
+            for reset in (app.shutdown, app.bot.shutdown):
+                try:
+                    await reset()
+                except Exception:
+                    pass
             await asyncio.sleep(delay)
 
 

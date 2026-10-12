@@ -136,10 +136,46 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_startup_retries_until_telegram_answers(self):
         load_functions("src/bot/telegram_bot.py", {"initialize_with_retry"}, self.ns)
-        app = SimpleNamespace(initialize=AsyncMock(side_effect=[DeliveryTimedOut("t1"), DeliveryNetworkError("t2"), None]))
+
+        # Как в PTB 22: Bot.initialize ставит флаг ДО getMe, Application — после всего
+        class FakeBot:
+            def __init__(self, failures):
+                self.failures, self.initialized, self.user, self.get_me_calls = failures, False, None, 0
+            async def initialize(self):
+                if self.initialized:
+                    return
+                self.initialized = True
+                self.get_me_calls += 1
+                if self.failures:
+                    raise self.failures.pop(0)
+                self.user = "me"
+            async def shutdown(self):
+                self.initialized = False
+            @property
+            def bot(self):
+                if self.user is None:
+                    raise RuntimeError("ExtBot is not properly initialized")
+                return self.user
+
+        class FakeApp:
+            def __init__(self, bot):
+                self.bot, self.initialized = bot, False
+            async def initialize(self):
+                if self.initialized:
+                    return
+                await self.bot.initialize()
+                self.initialized = True
+            async def shutdown(self):
+                if self.initialized:
+                    await self.bot.shutdown()
+                    self.initialized = False
+
+        app = FakeApp(FakeBot([DeliveryTimedOut("t1"), DeliveryNetworkError("t2")]))
         await asyncio.wait_for(self.ns["initialize_with_retry"](app, delay=0), timeout=1)
-        self.assertEqual(app.initialize.await_count, 3)
-        app = SimpleNamespace(initialize=AsyncMock(side_effect=ValueError("bad token")))
+        self.assertEqual(app.bot.get_me_calls, 3)
+        self.assertEqual(app.bot.bot, "me")
+
+        app = FakeApp(FakeBot([ValueError("bad token")]))
         with self.assertRaises(ValueError):
             await self.ns["initialize_with_retry"](app, delay=0)
 
