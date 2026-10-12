@@ -41,6 +41,7 @@ HEADERS = [
     "Отправлено",
     "Примечание",
     "Контакт",
+    "Фото",
 ]
 
 
@@ -57,6 +58,7 @@ class OrderRow:
     sent: str = ""
     note: str = ""
     contact_status: str = "❌ Не обработан"
+    photo: str = ""  # колонка K: ссылка на фото товара (заказы из расширения)
 
 
 def get_client(credentials_path: str | Path) -> gspread.Client:
@@ -128,6 +130,7 @@ def add_order(
         order.sent,
         order.note,
         order.contact_status,
+        getattr(order, "photo", ""),
     ]
     
     response = sheet.append_row(row_data)

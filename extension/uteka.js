@@ -22,6 +22,7 @@
     const LAST_KEY = 'utekaLast';
     const COLLAPSED_KEY = 'utekaPanelCollapsed';
     const TITLES_KEY = 'utekaTitles';
+    const IMAGES_KEY = 'utekaImages'; // productId -> og:image карточки (фото для вкладки «Заказы»)
     const MAX_PRODUCTS = 300;
     const PCT = Math.round(MARKUP * 100);
 
@@ -153,6 +154,13 @@
         render();
     }
 
+    function currentImage(productId) {
+        if (productIdFromPath(location.pathname) !== productId) return '';
+        const meta = document.querySelector('meta[property="og:image"]');
+        const url = meta ? String(meta.content || '') : '';
+        return url.startsWith('https://') ? url : '';
+    }
+
     function currentTitle(productId) {
         const h1 = document.querySelector('h1');
         const fromPage = h1 && productIdFromPath(location.pathname) === productId
@@ -206,6 +214,7 @@
             url: location.origin + '/product/' + location.pathname.split('/product/')[1],
             product: p.count > 1 ? `${title} × ${p.count}` : title,
             supplier: p.supplier, price: clientTotal,
+            image: currentImage(p.productId),
         };
         resetOrderForm(true);
         setMsg(`Заказ на Ютеке оформлен${num}. Записываю в таблицу…`, 'ok');
@@ -520,13 +529,18 @@
         if (!productId || !h1) return;
         const title = normText(h1).replace(/^Купить\s+/i, '');
         if (!title) return;
-        chrome.storage.local.get(TITLES_KEY, d => {
+        const image = currentImage(productId);
+        chrome.storage.local.get([TITLES_KEY, IMAGES_KEY], d => {
             const t = d[TITLES_KEY] || {};
-            if (t[productId] === title) return;
+            const im = d[IMAGES_KEY] || {};
+            if (t[productId] === title && (!image || im[productId] === image)) return;
             t[productId] = title;
-            const ids = Object.keys(t);
-            if (ids.length > 500) delete t[ids[0]];
-            chrome.storage.local.set({ [TITLES_KEY]: t });
+            if (image) im[productId] = image;
+            for (const map of [t, im]) {
+                const ids = Object.keys(map);
+                if (ids.length > 500) delete map[ids[0]];
+            }
+            chrome.storage.local.set({ [TITLES_KEY]: t, [IMAGES_KEY]: im });
         });
     }
 

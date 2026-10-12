@@ -96,7 +96,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             let payload = { phone, url, comment };
             if (isUteka) {
                 const offer = utekaId === openedUtekaId ? selectedUtekaOffer() : null;
+                const images = (await chrome.storage.local.get(['utekaImages'])).utekaImages || {};
                 payload = { phone, url, comment, product: await utekaProductTitle(tab, utekaId), source: 'uteka' };
+                if (images[utekaId]) payload.image = images[utekaId];
                 if (offer) Object.assign(payload, { supplier: offer.supplier, price: offer.client });
             }
             const response = await fetch(CONFIG.API_URL, {

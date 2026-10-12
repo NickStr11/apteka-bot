@@ -589,6 +589,10 @@ async def api_handle_order(request):
         phone = data.get('phone', '').strip()
         url = data.get('url')
         comment = data.get('comment', '').strip()
+        # фото товара с карточки (расширение) — для вкладки «Заказы» на сайте PharmOrder
+        photo = str(data.get('image') or '').strip()
+        if not (photo.startswith('https://') and len(photo) <= 500 and not any(c in photo for c in ' "<>')):
+            photo = ""
         
         if not phone and not comment:
             return web.json_response({'status': 'error', 'message': 'Missing phone or comment'}, status=400)
@@ -654,6 +658,7 @@ async def api_handle_order(request):
             sms_status="",
             sent="",
             note=note,
+            photo=photo,
         )
         
         # Save to Google Sheets
