@@ -157,6 +157,15 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                          ("79181234567", "КСЕФОмиелин, таблетки, 30 шт.", 1214.0, "🌐 Ютека · Оля"))
         self.assertIn("с Ютеки", sent.call_args.kwargs["text"])
 
+        # без цены (попап шлёт только название): сумма 0, строки «💰» в уведомлении нет
+        self.ns["add_order"].reset_mock()
+        request = SimpleNamespace(json=AsyncMock(return_value={"phone": "9181234567", "url": payload["url"], "product": "Товар"}), app={"bot_app": app})
+        response = await asyncio.wait_for(self.ns["api_handle_order"](request), timeout=1)
+        await asyncio.gather(*tasks)
+        self.assertEqual(response[0], 200)
+        self.assertEqual(self.ns["add_order"].call_args.args[1].total, 0.0)
+        self.assertNotIn("💰", sent.call_args.kwargs["text"])
+
         self.ns["add_order"].reset_mock()
         request = SimpleNamespace(json=AsyncMock(return_value={"phone": "9181234567", "url": payload["url"]}), app={"bot_app": app})
         response = await asyncio.wait_for(self.ns["api_handle_order"](request), timeout=1)

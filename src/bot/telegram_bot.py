@@ -672,7 +672,7 @@ async def api_handle_order(request):
                 f"{display_comment}\n"
                 f"💊 {product_name}"
             )
-            if is_uteka:
+            if is_uteka and product_price:
                 msg += f"\n💰 {product_price:g} ₽"
 
             notification = notify_browser_order(app_tg.bot, admin_id, msg)
