@@ -27,10 +27,15 @@
     function handleCluster(result, request) {
         if (!result || Number((result.view || {}).pharmacyId) !== PHARMACY_ID) return;
 
-        const offers = Object.values(result.extendedPickups || {})
-            // active:false — поставщик, которого Ютека для этой аптеки не предлагает
-            .filter(e => e && e.network && e.active !== false && Number(e.price) > 0)
-            .map(e => ({
+        // extendedPickups — поставщики всех аптек в кадре карты; какие из них возят
+        // в Фарматек, сказано в extendedPickupIds его метки. Без метки не угадываем.
+        const pin = ((result.map || {}).items || []).find(i => Number(i.pharmacyId) === PHARMACY_ID);
+        if (!pin) return;
+        const ourIds = new Set((pin.extendedPickupIds || []).map(Number));
+
+        const offers = Object.entries(result.extendedPickups || {})
+            .filter(([id, e]) => ourIds.has(Number(id)) && e && e.network && e.active !== false && Number(e.price) > 0)
+            .map(([, e]) => ({
                 supplier: e.network.title || ('#' + e.network.id),
                 total: Number(e.price),
                 text: e.pickupDateText || '',
@@ -39,8 +44,7 @@
             }));
 
         // Собственная бронь в аптеке, если Ютека её показывает
-        const pin = ((result.map || {}).items || []).find(i => Number(i.pharmacyId) === PHARMACY_ID);
-        if (pin && pin.hasPickup && Number(pin.price) > 0) {
+        if (pin.hasPickup && Number(pin.price) > 0) {
             offers.push({
                 supplier: 'Бронь в аптеке',
                 total: Number(pin.price),
