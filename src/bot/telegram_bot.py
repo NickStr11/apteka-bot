@@ -11,6 +11,8 @@ from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.helpers import escape_markdown
 from telegram.error import TimedOut, NetworkError, BadRequest
+from telegram.request import HTTPXRequest
+import httpx
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -962,6 +964,22 @@ async def handle_contact_callback(update: Update, context: ContextTypes.DEFAULT_
     return True
 
 
+async def keep_telegram_connection_warm(bot, interval=15):
+    """Touch the reply connection pool so it never goes idle and closes."""
+    failures = 0
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await bot.get_me(connect_timeout=10, read_timeout=10, write_timeout=10, pool_timeout=5)
+            if failures:
+                logger.info("Telegram warm connection restored after %s failure(s)", failures)
+            failures = 0
+        except Exception as e:
+            failures += 1
+            if failures == 1 or failures % 20 == 0:
+                logger.warning("Telegram warm ping failed (%s in a row): %s", failures, e)
+
+
 def main():
     """Run the bot."""
     # Load config
@@ -977,13 +995,24 @@ def main():
     sheet = get_sheet(client)
     
     # Create application
+    # New TCP connects from the VPS to api.telegram.org often hang, while
+    # established ones keep working (polling stays 200). Keep reply connections
+    # pooled for long and warm them with a ping, so replies reuse them.
     app = (
         Application.builder()
         .token(config.telegram_bot_token)
-        .connect_timeout(30)
-        .read_timeout(30)
-        .write_timeout(30)
-        .pool_timeout(30)
+        .request(HTTPXRequest(
+            connection_pool_size=8,
+            connect_timeout=30,
+            read_timeout=30,
+            write_timeout=30,
+            pool_timeout=30,
+            httpx_kwargs={"limits": httpx.Limits(
+                max_connections=8,
+                max_keepalive_connections=8,
+                keepalive_expiry=3600,
+            )},
+        ))
         .build()
     )
     
@@ -1112,6 +1141,7 @@ def main():
             await app.start()
             logger.info("🤖 Бот запущен!")
             await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+            asyncio.create_task(keep_telegram_connection_warm(app.bot))
             
             # Keep running until interrupted
             while True:
