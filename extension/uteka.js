@@ -1,8 +1,18 @@
 // Ютека: цены нашей аптеки (Фарматек, Ленина 161) с наценкой — на карточке товара,
-// на карте аптек и в корзине. Цены берутся из ответов map.Cluster (см. uteka-hook.js),
-// которые приходят, когда на карте выбран Фарматек.
+// на карте аптек и в корзине. Цены берутся из ответов map.Cluster (см. uteka-hook.js):
+// на карточке товара — автозапросом через API-клиент самого сайта, на карте — когда
+// выбран Фарматек.
 (() => {
     const PHARMACY_ID = 29723;
+    const CITY_ID = 16; // Краснодарский край
+    // кадр карты вокруг Фарматека, как при клике по его метке
+    const PHARMACY_VIEW = {
+        outsideBox: 0, myLat: 45.2675, myLon: 38.158333,
+        neLat: 45.2685, neLon: 38.1595, swLat: 45.2665, swLon: 38.1572,
+        pharmacyId: PHARMACY_ID, zoomLevel: 17,
+    };
+    const FRESH_MS = 10 * 60 * 1000;
+    const FETCH_TIMEOUT_MS = 25 * 1000;
     const PHARMACY_LABEL = 'Фарматек · Ленина 161';
     const MARKUP = 0.05;
     const SOURCE = 'apteka-helper-uteka';
@@ -20,18 +30,29 @@
 
     window.addEventListener('message', ev => {
         const d = ev.data;
-        if (ev.source !== window || !d || d.source !== SOURCE || d.type !== 'cluster') return;
-        try { handleCluster(d.result, d.request); } catch (e) { console.warn('[apteka-helper] uteka', e); }
+        if (ev.source !== window || !d || d.source !== SOURCE) return;
+        if (d.type === 'cluster') {
+            try { handleCluster(d.result, d.request, !!d.auto); } catch (e) { console.warn('[apteka-helper] uteka', e); }
+        } else if (d.type === 'fetch-result') {
+            const pid = Number(d.productId);
+            if (d.error) fetchState[pid] = 'error';
+            else delete fetchState[pid];
+            render();
+        }
     });
 
-    function handleCluster(result, request) {
+    // auto — ответ на наш запрос с карточки товара: корзину он не описывает
+    function handleCluster(result, request, auto) {
         if (!result || Number((result.view || {}).pharmacyId) !== PHARMACY_ID) return;
 
+        const params = (request && request.params) || {};
+        const cart = normalizeCart((params.data || {}).cart);
+        const ts = Date.now();
+
         // extendedPickups — поставщики всех аптек в кадре карты; какие из них возят
-        // в Фарматек, сказано в extendedPickupIds его метки. Без метки не угадываем.
+        // в Фарматек, сказано в extendedPickupIds его метки. Нет метки — товара там нет.
         const pin = ((result.map || {}).items || []).find(i => Number(i.pharmacyId) === PHARMACY_ID);
-        if (!pin) return;
-        const ourIds = new Set((pin.extendedPickupIds || []).map(Number));
+        const ourIds = new Set(((pin && pin.extendedPickupIds) || []).map(Number));
 
         const offers = Object.entries(result.extendedPickups || {})
             .filter(([id, e]) => ourIds.has(Number(id)) && e && e.network && e.active !== false && Number(e.price) > 0)
@@ -44,7 +65,7 @@
             }));
 
         // Собственная бронь в аптеке, если Ютека её показывает
-        if (pin.hasPickup && Number(pin.price) > 0) {
+        if (pin && pin.hasPickup && Number(pin.price) > 0) {
             offers.push({
                 supplier: 'Бронь в аптеке',
                 total: Number(pin.price),
@@ -53,13 +74,14 @@
                 items: normalizeCart(pin.cart),
             });
         }
-        if (!offers.length) return;
+        if (!offers.length) {
+            // запрос по одному товару без предложений — запоминаем, что в Фарматек его не везут
+            if (cart.length === 1) chrome.storage.local.set({ [PRODUCT_PREFIX + cart[0].productId]: { ts, offers: [] } });
+            return;
+        }
         offers.sort((a, b) => a.total - b.total);
 
-        const params = (request && request.params) || {};
-        const cart = normalizeCart((params.data || {}).cart);
-        const ts = Date.now();
-        const toSave = { [LAST_KEY]: { ts, cart, offers } };
+        const toSave = auto ? {} : { [LAST_KEY]: { ts, cart, offers } };
 
         const byProduct = {};
         for (const o of offers) {
@@ -89,6 +111,22 @@
             keys.sort((a, b) => (all[a].ts || 0) - (all[b].ts || 0));
             chrome.storage.local.remove(keys.slice(0, keys.length - MAX_PRODUCTS));
         });
+    }
+
+    // ---------- автозапрос цен для карточки товара ----------
+
+    const fetchState = {};          // productId -> 'loading' | 'error'
+    const requestedThisPage = new Set();
+
+    function requestPrices(productId) {
+        if (fetchState[productId] === 'loading') return;
+        fetchState[productId] = 'loading';
+        window.postMessage({
+            source: SOURCE, type: 'fetch-prices', productId, cityId: CITY_ID, view: PHARMACY_VIEW,
+        }, location.origin);
+        setTimeout(() => {
+            if (fetchState[productId] === 'loading') { fetchState[productId] = 'error'; render(); }
+        }, FETCH_TIMEOUT_MS);
     }
 
     // ---------- панель ----------
@@ -165,8 +203,9 @@
                 .note { color: #6b7280; font-size: 12px; margin-top: 8px; }
                 .warn { color: #b45309; }
                 ul.cart { margin: 2px 0 8px; padding-left: 18px; }
-                a.btn { display: inline-block; margin-top: 8px; padding: 6px 10px; border-radius: 8px;
-                        background: #16a34a; color: #fff; text-decoration: none; font-weight: 600; }
+                .btn { display: inline-block; margin-top: 8px; padding: 6px 10px; border-radius: 8px; border: 0;
+                       background: #16a34a; color: #fff; text-decoration: none; font: 600 13px system-ui, sans-serif; cursor: pointer; }
+                .link { margin-left: 10px; color: #16a34a; font-size: 12px; }
             </style>
             <div class="box ${collapsed ? 'collapsed' : ''}">
                 <div class="head"><span>💊 ${esc(PHARMACY_LABEL)} · +${PCT}%</span><span>${collapsed ? '▲' : '▼'}</span></div>
@@ -202,16 +241,33 @@
 
             if (productId) {
                 const entry = data[PRODUCT_PREFIX + productId];
-                const pickerUrl = `/checkout/pickup/picker/?fastOrderProductCount=1&fastOrderProductId=${productId}`;
-                if (entry && entry.offers && entry.offers.length) {
-                    paint(`${tableHtml(entry.offers, 'price')}
-                        <div class="note">Цена за 1 шт. Обновлено ${esc(age(entry.ts))}.</div>
-                        <a class="btn" href="${pickerUrl}">Обновить: открыть карту</a>`, collapsed);
-                } else {
-                    paint(`<div>Цен Фарматека по этому товару ещё нет.</div>
-                        <div class="note">Открой карту аптек, найди Фарматек (Ленина 161) и нажми на него — цены всех поставщиков появятся здесь.</div>
-                        <a class="btn" href="${pickerUrl}">Открыть карту аптек</a>`, collapsed);
+                const fresh = entry && Date.now() - entry.ts < FRESH_MS;
+                if (!fresh && !requestedThisPage.has(productId)) {
+                    requestedThisPage.add(productId);
+                    requestPrices(productId);
                 }
+                const state = fetchState[productId];
+                const pickerUrl = `/checkout/pickup/picker/?fastOrderProductCount=1&fastOrderProductId=${productId}`;
+                const status = state === 'loading' ? ' Обновляю…'
+                    : state === 'error' ? ' Не удалось обновить.' : '';
+                const actions = `<button class="btn" data-act="refresh">Обновить</button>
+                    <a class="link" href="${pickerUrl}">карта аптек</a>`;
+                let html;
+                if (entry && entry.offers && entry.offers.length) {
+                    html = `${tableHtml(entry.offers, 'price')}
+                        <div class="note">Цена за 1 шт. Обновлено ${esc(age(entry.ts))}.${status}</div>${actions}`;
+                } else if (entry && !state) {
+                    html = `<div>В Фарматек этот товар сейчас не привезут.</div>
+                        <div class="note">Ютека не даёт по нему поставщиков для Ленина 161. Проверено ${esc(age(entry.ts))}.</div>${actions}`;
+                } else if (state === 'loading') {
+                    html = `<div class="muted">Загружаю цены Фарматека…</div>`;
+                } else {
+                    html = `<div>Не удалось получить цены Фарматека.</div>
+                        <div class="note">Возможно, Ютека просит капчу. Пройди её и нажми «Обновить», или открой карту и выбери Фарматек.</div>${actions}`;
+                }
+                paint(html, collapsed);
+                const btn = shadow.querySelector('[data-act="refresh"]');
+                if (btn) btn.addEventListener('click', () => { requestPrices(productId); render(); });
                 return;
             }
 
@@ -361,6 +417,7 @@
         setInterval(() => {
             if (location.href !== lastHref) {
                 lastHref = location.href;
+                requestedThisPage.clear();
                 if (location.pathname.startsWith('/checkout/pickup/picker')) pickerOpenedAt = Date.now();
                 lastCartSig = '';
                 render();
