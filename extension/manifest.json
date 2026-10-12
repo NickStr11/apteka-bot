@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Apteka Order Helper",
-    "version": "2.4",
+    "version": "2.5",
     "description": "Быстрое оформление заказа с Apteka.ru; цены Фарматека +5% и заказы с Ютеки",
     "permissions": [
         "activeTab",
@@ -10,6 +10,9 @@
     "action": {
         "default_popup": "popup.html",
         "default_icon": "icon128.png"
+    },
+    "background": {
+        "service_worker": "background.js"
     },
     "content_scripts": [
         {

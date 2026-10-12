@@ -1,7 +1,9 @@
 // Ютека: цены нашей аптеки (Фарматек, Ленина 161) с наценкой — на карточке товара,
 // на карте аптек и в корзине. Цены берутся из ответов map.Cluster (см. uteka-hook.js):
 // на карточке товара — автозапросом через API-клиент самого сайта, на карте — когда
-// выбран Фарматек.
+// выбран Фарматек. С карточки можно сразу оформить заказ у выбранного поставщика:
+// заказ на Ютеке (orders.Calculate → orders.Create в uteka-hook.js) + строка в таблицу
+// через бот (background.js).
 (() => {
     const PHARMACY_ID = 29723;
     const CITY_ID = 16; // Краснодарский край
@@ -38,6 +40,8 @@
             if (d.error) fetchState[pid] = 'error';
             else delete fetchState[pid];
             render();
+        } else if (d.type === 'order-result') {
+            onOrderResult(d);
         }
     });
 
@@ -56,7 +60,8 @@
 
         const offers = Object.entries(result.extendedPickups || {})
             .filter(([id, e]) => ourIds.has(Number(id)) && e && e.network && e.active !== false && Number(e.price) > 0)
-            .map(([, e]) => ({
+            .map(([id, e]) => ({
+                networkId: Number(id),
                 supplier: e.network.title || ('#' + e.network.id),
                 total: Number(e.price),
                 text: e.pickupDateText || '',
@@ -67,6 +72,7 @@
         // Собственная бронь в аптеке, если Ютека её показывает
         if (pin && pin.hasPickup && Number(pin.price) > 0) {
             offers.push({
+                networkId: null, // бронь в самой аптеке этим путём не оформляем
                 supplier: 'Бронь в аптеке',
                 total: Number(pin.price),
                 text: pin.pickupText || '',
@@ -87,7 +93,7 @@
         for (const o of offers) {
             for (const it of o.items) {
                 (byProduct[it.productId] = byProduct[it.productId] || []).push({
-                    supplier: o.supplier, price: it.price, text: o.text,
+                    supplier: o.supplier, price: it.price, text: o.text, networkId: o.networkId,
                 });
             }
         }
@@ -127,6 +133,142 @@
         setTimeout(() => {
             if (fetchState[productId] === 'loading') { fetchState[productId] = 'error'; render(); }
         }, FETCH_TIMEOUT_MS);
+    }
+
+    // ---------- заказ с карточки ----------
+
+    // одна открытая форма заказа на вкладку
+    const order = { productId: null, idx: null, phone: '', comment: '', count: 1, unit: null,
+                    busy: false, msg: '', kind: '', focus: null };
+    const pendingOrders = {};
+
+    function resetOrderForm(keepMsg) {
+        Object.assign(order, { idx: null, phone: '', comment: '', count: 1, unit: null, busy: false, focus: null });
+        if (!keepMsg) { order.msg = ''; order.kind = ''; }
+    }
+
+    function setMsg(text, kind) {
+        order.msg = text;
+        order.kind = kind || '';
+        render();
+    }
+
+    function currentTitle(productId) {
+        const h1 = document.querySelector('h1');
+        const fromPage = h1 && productIdFromPath(location.pathname) === productId
+            ? normText(h1).replace(/^Купить\s+/i, '') : '';
+        return fromPage || String(document.title || '').split(' – ')[0].trim() || ('товар #' + productId);
+    }
+
+    function placeOrder(productId, offer) {
+        if (order.busy) return;
+        const phone = order.phone.trim();
+        const comment = order.comment.trim();
+        if (!phone && !comment) { setMsg('Введи номер клиента (или комментарий).', 'err'); return; }
+        const unit = order.unit || offer.price;
+        const count = order.count;
+        const reqId = Math.random().toString(36).slice(2);
+        pendingOrders[reqId] = { productId, supplier: offer.supplier, networkId: offer.networkId, unit, count, phone, comment };
+        order.busy = true;
+        setMsg('Оформляю заказ на Ютеке…', '');
+        window.postMessage({
+            source: SOURCE, type: 'place-order', reqId, productId, count,
+            pharmacyId: PHARMACY_ID, networkId: offer.networkId, expectedTotal: unit * count,
+        }, location.origin);
+        setTimeout(() => {
+            if (!pendingOrders[reqId]) return;
+            delete pendingOrders[reqId];
+            order.busy = false;
+            setMsg('Ютека не ответила. Перед повтором проверь вкладку «Заказы» — заказ мог создаться.', 'err');
+        }, 30000);
+    }
+
+    function onOrderResult(d) {
+        const p = pendingOrders[d.reqId];
+        if (!p) return;
+        delete pendingOrders[d.reqId];
+        order.busy = false;
+        if (d.priceChanged) {
+            order.unit = d.priceChanged / p.count;
+            setMsg(`Цена у ${p.supplier} изменилась: ${rub(d.priceChanged)} на Ютеке, клиенту ${rub(withMarkup(order.unit) * p.count)}. Нажми «Заказать» ещё раз, если подходит.`, 'err');
+            return;
+        }
+        if (d.error) { setMsg('Заказ не оформлен: ' + d.error, 'err'); return; }
+        if (d.dryRun) {
+            setMsg(`ТЕСТ: Ютека подтвердила ${rub(d.price)} у ${p.supplier}. Заказ не создан, в таблицу не отправлено.`, 'ok');
+            return;
+        }
+        const num = d.orderNumber ? ` №${d.orderNumber}` : '';
+        const clientTotal = withMarkup(p.unit) * p.count;
+        const title = currentTitle(p.productId);
+        const payload = {
+            phone: p.phone, comment: p.comment, source: 'uteka',
+            url: location.origin + '/product/' + location.pathname.split('/product/')[1],
+            product: p.count > 1 ? `${title} × ${p.count}` : title,
+            supplier: p.supplier, price: clientTotal,
+        };
+        resetOrderForm(true);
+        setMsg(`Заказ на Ютеке оформлен${num}. Записываю в таблицу…`, 'ok');
+        chrome.runtime.sendMessage({ type: 'bot-order', payload }, resp => {
+            const err = chrome.runtime.lastError ? chrome.runtime.lastError.message
+                : !resp ? 'нет ответа' : !resp.ok ? (resp.error || (resp.data && resp.data.message) || 'ошибка бота') : '';
+            if (err) {
+                setMsg(`Заказ на Ютеке оформлен${num}, но в таблицу НЕ записан (${err}). Отправь вручную через окно расширения.`, 'err');
+            } else {
+                setMsg(`✅ Заказ${num} оформлен у ${p.supplier} и записан в таблицу: ${p.phone || p.comment}, ${rub(clientTotal)}.`, 'ok');
+            }
+        });
+    }
+
+    function orderFormHtml(offer) {
+        const unit = order.unit || offer.price;
+        const total = withMarkup(unit) * order.count;
+        return `<div class="order">
+            <div class="ohead">Заказ у <b>${esc(offer.supplier)}</b> · клиенту <b class="client">${rub(total)}</b>
+                ${order.count > 1 ? `<span class="muted">(${order.count} × ${rub(withMarkup(unit))})</span>` : ''}</div>
+            <input data-f="phone" type="tel" placeholder="Номер клиента" value="${esc(order.phone)}">
+            <input data-f="comment" type="text" placeholder="Комментарий (необязательно)" value="${esc(order.comment)}">
+            <div class="orow">
+                <span class="muted">Кол-во</span>
+                <button class="qbtn" data-act="minus">−</button><b>${order.count}</b><button class="qbtn" data-act="plus">+</button>
+                <span class="grow"></span>
+                <button class="link" data-act="cancel">отмена</button>
+            </div>
+            <button class="btn obtn" data-act="order" ${order.busy ? 'disabled' : ''}>${order.busy ? 'Оформляю…' : 'Заказать на Ютеке'}</button>
+        </div>`;
+    }
+
+    function wireOrderForm(productId, offers) {
+        shadow.querySelectorAll('tr[data-idx]').forEach(tr => tr.addEventListener('click', () => {
+            const idx = Number(tr.dataset.idx);
+            if (order.busy || (order.productId === productId && order.idx === idx)) return;
+            resetOrderForm();
+            Object.assign(order, { productId, idx, focus: 'phone' });
+            render();
+        }));
+        const form = shadow.querySelector('.order');
+        if (!form) return;
+        const offer = offers[order.idx];
+        form.querySelectorAll('input[data-f]').forEach(inp => {
+            inp.addEventListener('input', () => { order[inp.dataset.f] = inp.value; });
+            inp.addEventListener('focus', () => { order.focus = inp.dataset.f; });
+            // хоткеи сайта не должны срабатывать при наборе
+            inp.addEventListener('keydown', ev => {
+                ev.stopPropagation();
+                if (ev.key === 'Enter') placeOrder(productId, offer);
+            });
+            inp.addEventListener('keyup', ev => ev.stopPropagation());
+            inp.addEventListener('keypress', ev => ev.stopPropagation());
+        });
+        const act = (name, fn) => { const b = form.querySelector(`[data-act="${name}"]`); if (b) b.addEventListener('click', fn); };
+        act('minus', () => { if (order.count > 1) { order.count--; render(); } });
+        act('plus', () => { if (order.count < 20) { order.count++; render(); } });
+        act('cancel', () => { if (!order.busy) { resetOrderForm(); render(); } });
+        act('order', () => placeOrder(productId, offer));
+        if (order.focus) {
+            const inp = form.querySelector(`input[data-f="${order.focus}"]`);
+            if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+        }
     }
 
     // ---------- панель ----------
@@ -205,7 +347,23 @@
                 ul.cart { margin: 2px 0 8px; padding-left: 18px; }
                 .btn { display: inline-block; margin-top: 8px; padding: 6px 10px; border-radius: 8px; border: 0;
                        background: #16a34a; color: #fff; text-decoration: none; font: 600 13px system-ui, sans-serif; cursor: pointer; }
-                .link { margin-left: 10px; color: #16a34a; font-size: 12px; }
+                .link { margin-left: 10px; color: #16a34a; font-size: 12px; background: none; border: 0; cursor: pointer; text-decoration: underline; padding: 0; }
+                tr.pick { cursor: pointer; }
+                tr.pick:hover td { background: #f0fdf4; }
+                tr.sel td { background: #dcfce7; }
+                .hint { color: #6b7280; font-size: 11px; margin-top: 4px; }
+                .order { margin-top: 8px; padding: 8px; border: 1px solid #16a34a; border-radius: 8px; background: #f0fdf4; }
+                .ohead { margin-bottom: 6px; }
+                .order input { display: block; box-sizing: border-box; width: 100%; margin: 0 0 6px; padding: 6px 8px;
+                               border: 1px solid #d1d5db; border-radius: 6px; font: 14px system-ui, sans-serif; background: #fff; color: #111; }
+                .orow { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+                .orow .grow { flex: 1; }
+                .qbtn { width: 24px; height: 24px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; font: 600 14px system-ui; }
+                .obtn { display: block; width: 100%; margin-top: 6px; font-size: 14px; padding: 8px; }
+                .obtn[disabled] { opacity: .6; cursor: default; }
+                .omsg { margin-top: 8px; padding: 6px 8px; border-radius: 6px; font-size: 12px; background: #f1f5f9; }
+                .omsg.ok { background: #dcfce7; color: #14532d; }
+                .omsg.err { background: #fff7ed; color: #9a3412; }
             </style>
             <div class="box ${collapsed ? 'collapsed' : ''}">
                 <div class="head"><span>💊 ${esc(PHARMACY_LABEL)} · +${PCT}%</span><span>${collapsed ? '▲' : '▼'}</span></div>
@@ -254,8 +412,29 @@
                 const actions = `<button class="btn" data-act="refresh">Обновить</button>
                     <a class="link" href="${pickerUrl}">карта аптек</a>`;
                 let html;
-                if (entry && entry.offers && entry.offers.length) {
-                    html = `${tableHtml(entry.offers, 'price')}
+                if (order.productId !== productId) { resetOrderForm(); order.productId = productId; }
+                const offers = (entry && entry.offers) || [];
+                if (order.idx !== null && !(offers[order.idx] && offers[order.idx].networkId)) resetOrderForm(true);
+                const msgHtml = order.msg ? `<div class="omsg ${order.kind}">${esc(order.msg)}</div>` : '';
+                if (offers.length) {
+                    const rows = offers.map((o, i) => {
+                        const orderable = !!o.networkId;
+                        const cls = [orderable ? 'pick' : '', order.idx === i ? 'sel' : ''].join(' ');
+                        return `<tr class="${cls}" ${orderable ? `data-idx="${i}"` : ''}>
+                            <td class="sup">${esc(o.supplier)}</td>
+                            <td class="num muted">${rub(o.price)}</td>
+                            <td class="num client">${rub(withMarkup(o.price))}</td>
+                        </tr>`;
+                    }).join('');
+                    const canOrder = offers.some(o => o.networkId);
+                    html = `<table>
+                            <tr><th>Поставщик</th><th class="num">Ютека</th><th class="num">Клиенту +${PCT}%</th></tr>
+                            ${rows}
+                        </table>
+                        ${order.idx !== null ? orderFormHtml(offers[order.idx])
+                            : canOrder ? '<div class="hint">Нажми на поставщика, чтобы заказать.</div>'
+                            : '<div class="hint">Чтобы заказать отсюда, нажми «Обновить».</div>'}
+                        ${msgHtml}
                         <div class="note">Цена за 1 шт. Обновлено ${esc(age(entry.ts))}.${status}</div>${actions}`;
                 } else if (entry && !state) {
                     html = `<div>В Фарматек этот товар сейчас не привезут.</div>
@@ -269,6 +448,7 @@
                 paint(html, collapsed);
                 const btn = shadow.querySelector('[data-act="refresh"]');
                 if (btn) btn.addEventListener('click', () => { requestPrices(productId); render(); });
+                wireOrderForm(productId, offers);
                 return;
             }
 

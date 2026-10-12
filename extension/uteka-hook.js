@@ -105,9 +105,54 @@
         }
     }
 
+    // ---------- заказ с карточки: orders.Calculate → orders.Create ----------
+    // Те же вызовы, что делает сайт на странице «Оформление заказа» (быстрый заказ одного
+    // товара): покупатель — профиль аккаунта, корзина не трогается.
+    // localStorage aptekaHelperDryRun=1 — тест: только Calculate, заказ не создаётся.
+
+    function orderNumberOf(created) {
+        if (created == null) return '';
+        if (typeof created !== 'object') return String(created);
+        for (const k of ['code', 'number', 'orderNumber', 'orderCode', 'id', 'orderId']) {
+            if (created[k] != null && created[k] !== '') return String(created[k]);
+        }
+        if (created.order && typeof created.order === 'object') return orderNumberOf(created.order);
+        return '';
+    }
+
+    async function placeOrder(d) {
+        const reply = extra => post(Object.assign({ type: 'order-result', reqId: d.reqId }, extra));
+        try {
+            const api = await waitApi(10000);
+            if (!api || !api.orders || typeof api.orders.create !== 'function') { reply({ error: 'сайт Ютеки ещё не загрузился' }); return; }
+            const cart = [{ count: Number(d.count) || 1, productId: Number(d.productId) }];
+            const pharmacyId = Number(d.pharmacyId);
+            const pharmacyNetworkId = Number(d.networkId);
+            const calc = await api.orders.calculate({ pharmacyId, cart, pharmacyNetworkId });
+            if (!calc || !calc.isValid) {
+                const why = ((calc && calc.items) || []).map(i => i && i.error).filter(Boolean).join('; ');
+                reply({ error: 'Ютека не даёт оформить' + (why ? ': ' + why : ' (товара нет у поставщика)') });
+                return;
+            }
+            if (Math.round(Number(calc.price)) !== Math.round(Number(d.expectedTotal))) {
+                reply({ priceChanged: Number(calc.price) });
+                return;
+            }
+            let dryRun = false;
+            try { dryRun = localStorage.getItem('aptekaHelperDryRun') === '1'; } catch (e) { /* нет доступа */ }
+            if (dryRun) { reply({ ok: true, dryRun: true, price: Number(calc.price) }); return; }
+            const created = await api.orders.create({ source: 1, cart, pharmacyId, isPartial: false, cartId: null, pharmacyNetworkId });
+            console.info('[apteka-helper] orders.Create', created);
+            reply({ ok: true, price: Number(calc.price), orderNumber: orderNumberOf(created) });
+        } catch (e) {
+            reply({ error: String((e && (e.message || e.data && e.data.message)) || e) });
+        }
+    }
+
     window.addEventListener('message', ev => {
         const d = ev.data;
-        if (ev.source !== window || !d || d.source !== SOURCE || d.type !== 'fetch-prices') return;
-        fetchPrices(Number(d.productId), Number(d.cityId), d.view);
+        if (ev.source !== window || !d || d.source !== SOURCE) return;
+        if (d.type === 'fetch-prices') fetchPrices(Number(d.productId), Number(d.cityId), d.view);
+        else if (d.type === 'place-order') placeOrder(d);
     });
 })();
