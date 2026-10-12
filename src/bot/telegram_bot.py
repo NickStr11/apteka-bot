@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.helpers import escape_markdown
 from telegram.error import TimedOut, NetworkError, BadRequest
 from telegram.ext import (
     Application,
@@ -839,12 +840,17 @@ async def show_unprocessed_orders(chat_id: int, days: int, context: ContextTypes
     for row_num, order in all_unprocessed:
         status_icon = order.contact_status if order.contact_status else "❌ Не обработан"
         phone_display = f"+{order.phone.lstrip('+')}"
+        safe_order_number = escape_markdown(str(order.order_number), version=1)
+        safe_products = escape_markdown(str(order.products or ''), version=1)
+        safe_phone = escape_markdown(phone_display, version=1)
+        safe_date = escape_markdown(str(order.date or ''), version=1)
+        safe_status = escape_markdown(str(status_icon), version=1)
         text = (
-            f"📦 *Заказ #{order.order_number}*\n"
-            f"💊 {order.products}\n"
-            f"📞 {phone_display}\n"
-            f"📅 {order.date}\n"
-            f"📋 {status_icon}"
+            f"📦 *Заказ #{safe_order_number}*\n"
+            f"💊 {safe_products}\n"
+            f"📞 {safe_phone}\n"
+            f"📅 {safe_date}\n"
+            f"📋 {safe_status}"
         )
 
         keyboard = get_contact_keyboard(row_num, order.phone)
@@ -971,7 +977,15 @@ def main():
     sheet = get_sheet(client)
     
     # Create application
-    app = Application.builder().token(config.telegram_bot_token).build()
+    app = (
+        Application.builder()
+        .token(config.telegram_bot_token)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .build()
+    )
     
     # Store config and sheet in bot_data
     app.bot_data['config'] = config
@@ -982,6 +996,17 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
+
+    # Error handler to prevent crashes on timeouts
+    async def error_handler(update, context):
+        logger.error(f"Bot error: {context.error}")
+        if update and update.effective_message:
+            try:
+                await update.effective_message.reply_text("⚠️ Временная ошибка, попробуй ещё раз")
+            except Exception:
+                pass
+
+    app.add_error_handler(error_handler)
     
     # Start bot and web server
     logger.info("🤖 Бот запускается...")
