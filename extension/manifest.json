@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
     "name": "Apteka Order Helper",
-    "version": "2.0",
-    "description": "Быстрое оформление заказа с Apteka.ru",
+    "version": "2.1",
+    "description": "Быстрое оформление заказа с Apteka.ru; цены Фарматека +5% на Ютеке",
     "permissions": [
         "activeTab",
         "storage"
@@ -11,6 +11,19 @@
         "default_popup": "popup.html",
         "default_icon": "icon128.png"
     },
+    "content_scripts": [
+        {
+            "matches": ["https://uteka.ru/*", "https://*.uteka.ru/*"],
+            "js": ["uteka-hook.js"],
+            "run_at": "document_start",
+            "world": "MAIN"
+        },
+        {
+            "matches": ["https://uteka.ru/*", "https://*.uteka.ru/*"],
+            "js": ["uteka.js"],
+            "run_at": "document_start"
+        }
+    ],
     "icons": {
         "16": "icon128.png",
         "48": "icon128.png",
