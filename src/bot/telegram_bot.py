@@ -613,10 +613,22 @@ async def api_handle_order(request):
             
         logger.info(f"🚀 API Order received: {phone or comment} - {url}")
         
-        # Extract product with price
-        product_info = await asyncio.to_thread(extract_product_with_price, url)
-        if not product_info:
-            return web.json_response({'status': 'error', 'message': 'Could not parse product from URL'}, status=400)
+        # Ютека: страницу с VPS не скачать (капча, подписанные запросы) — название и
+        # цену Фарматека +5% присылает расширение. Apteka.ru парсим как раньше.
+        is_uteka = 'uteka.ru' in url
+        if is_uteka:
+            product_name = str(data.get('product') or '').strip()
+            try:
+                product_price = float(data.get('price') or 0)
+            except (TypeError, ValueError):
+                product_price = 0.0
+            if not product_name:
+                return web.json_response({'status': 'error', 'message': 'Missing product for Uteka order'}, status=400)
+        else:
+            product_info = await asyncio.to_thread(extract_product_with_price, url)
+            if not product_info:
+                return web.json_response({'status': 'error', 'message': 'Could not parse product from URL'}, status=400)
+            product_name, product_price = product_info.name, product_info.price
             
         # Get sheet and config from bot_data
         app_tg = request.app['bot_app']
@@ -627,14 +639,16 @@ async def api_handle_order(request):
         note = "🌐 Расширение"
         if comment:
             note = f"🌐 {comment}"
+        if is_uteka:
+            note = f"🌐 Ютека · {comment}" if comment else "🌐 Ютека"
         
         # Create order
         order = OrderRow(
             date=datetime.now().strftime("%d.%m.%Y %H:%M"),
             order_number="Браузер",
             phone=phone,
-            products=product_info.name,
-            total=product_info.price,
+            products=product_name,
+            total=product_price,
             wa_status="",
             sms_status="",
             sent="",
@@ -653,11 +667,14 @@ async def api_handle_order(request):
             display_comment = f"👤 {comment}" if comment else "👤 (Без комментария)"
 
             msg = (
-                f"🌐 Новый заказ из браузера!\n\n"
+                f"🌐 Новый заказ {'с Ютеки' if is_uteka else 'из браузера'}!\n\n"
                 f"📞 {display_phone}\n"
                 f"{display_comment}\n"
-                f"💊 {product_info.name}"
+                f"💊 {product_name}"
             )
+            if is_uteka:
+                msg += f"\n💰 {product_price:g} ₽"
+
             notification = notify_browser_order(app_tg.bot, admin_id, msg)
             app_tg.create_task(notification)
         except Exception:
@@ -665,7 +682,7 @@ async def api_handle_order(request):
                 notification.close()
             logger.exception("Browser order saved; could not schedule Telegram notification")
 
-        return web.json_response({'status': 'ok', 'product': product_info.name})
+        return web.json_response({'status': 'ok', 'product': product_name})
         
     except Exception as e:
         logger.error(f"❌ API Error: {e}")

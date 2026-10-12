@@ -134,6 +134,35 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*tasks)
         self.ns["logger"].exception.assert_called_once()
 
+    async def test_uteka_order_uses_product_and_price_from_extension(self):
+        tasks = []
+        sent = AsyncMock()
+        app = SimpleNamespace(bot=SimpleNamespace(send_message=sent), bot_data={"sheet": object(), "config": SimpleNamespace(telegram_admin_id="1")})
+        def track(coro):
+            task = asyncio.create_task(coro)
+            tasks.append(task)
+            return task
+        app.create_task = track
+        parser = Mock(side_effect=AssertionError("Uteka page must not be fetched"))
+        self.ns.update(extract_product_with_price=parser, add_order=Mock(return_value=42), web=SimpleNamespace(json_response=lambda data, status=200: (status, data)))
+        payload = {"phone": "89181234567", "comment": "Оля", "url": "https://krasnodar.uteka.ru/product/ksefomielin-392534/",
+                   "product": "КСЕФОмиелин, таблетки, 30 шт.", "price": 1214}
+        request = SimpleNamespace(json=AsyncMock(return_value=payload), app={"bot_app": app})
+        response = await asyncio.wait_for(self.ns["api_handle_order"](request), timeout=1)
+        await asyncio.gather(*tasks)
+        self.assertEqual(response, (200, {"status": "ok", "product": "КСЕФОмиелин, таблетки, 30 шт."}))
+        parser.assert_not_called()
+        order = self.ns["add_order"].call_args.args[1]
+        self.assertEqual((order.phone, order.products, order.total, order.note),
+                         ("79181234567", "КСЕФОмиелин, таблетки, 30 шт.", 1214.0, "🌐 Ютека · Оля"))
+        self.assertIn("с Ютеки", sent.call_args.kwargs["text"])
+
+        self.ns["add_order"].reset_mock()
+        request = SimpleNamespace(json=AsyncMock(return_value={"phone": "9181234567", "url": payload["url"]}), app={"bot_app": app})
+        response = await asyncio.wait_for(self.ns["api_handle_order"](request), timeout=1)
+        self.assertEqual(response[0], 400)
+        self.ns["add_order"].assert_not_called()
+
     async def test_browser_blocked_parser_leaves_event_loop_responsive(self):
         started, release = threading.Event(), threading.Event()
         notifications = []

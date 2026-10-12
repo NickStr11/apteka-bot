@@ -72,6 +72,29 @@
             cursor: not-allowed;
         }
 
+        #uteka-preview {
+            display: none;
+            margin-bottom: 12px;
+            padding: 10px;
+            border-radius: 8px;
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            font-size: 13px;
+            line-height: 1.35;
+            color: #1f2937;
+        }
+
+        #uteka-preview.warn {
+            background: #fff7ed;
+            border-color: #fed7aa;
+        }
+
+        #uteka-preview .price {
+            font-size: 16px;
+            font-weight: 800;
+            color: #c2410c;
+        }
+
         #status {
             margin-top: 15px;
             font-size: 13px;
@@ -122,6 +145,7 @@
 <body>
     <h2>💊 Apteka Helper</h2>
     <div class="card">
+        <div id="uteka-preview"></div>
         <div id="form-container">
             <form id="order-form" autocomplete="off">
                 <label for="phone">Номер телефона клиента</label>
@@ -130,7 +154,7 @@
                 <label for="comment">Комментарий / Имя (необязательно)</label>
                 <input type="text" id="comment" placeholder="Иванов Иван" autocomplete="off"
                     name="comment_field_random_123">
-                <div style="text-align: right; font-size: 10px; color: #ccc; margin-bottom: 5px;">v2.1</div>
+                <div style="text-align: right; font-size: 10px; color: #ccc; margin-bottom: 5px;">v2.2</div>
                 <button id="send-btn" type="button">🚀 Отправить в Бот</button>
             </form>
         </div>
