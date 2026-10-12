@@ -237,6 +237,7 @@
         if (productId) keys.push(PRODUCT_PREFIX + productId);
 
         chrome.storage.local.get(keys, data => {
+            if (location.pathname !== path) return; // пока читали storage, ушли на другую страницу
             const collapsed = !!data[COLLAPSED_KEY];
 
             if (productId) {
@@ -423,7 +424,7 @@
                 render();
                 scheduleAnnotate();
             }
-        }, 700);
+        }, 250);
 
         chrome.storage.onChanged.addListener((changes, area) => {
             if (area === 'local') render();
