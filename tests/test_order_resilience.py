@@ -134,6 +134,15 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*tasks)
         self.ns["logger"].exception.assert_called_once()
 
+    async def test_startup_retries_until_telegram_answers(self):
+        load_functions("src/bot/telegram_bot.py", {"initialize_with_retry"}, self.ns)
+        app = SimpleNamespace(initialize=AsyncMock(side_effect=[DeliveryTimedOut("t1"), DeliveryNetworkError("t2"), None]))
+        await asyncio.wait_for(self.ns["initialize_with_retry"](app, delay=0), timeout=1)
+        self.assertEqual(app.initialize.await_count, 3)
+        app = SimpleNamespace(initialize=AsyncMock(side_effect=ValueError("bad token")))
+        with self.assertRaises(ValueError):
+            await self.ns["initialize_with_retry"](app, delay=0)
+
     async def test_uteka_order_uses_product_and_price_from_extension(self):
         tasks = []
         sent = AsyncMock()

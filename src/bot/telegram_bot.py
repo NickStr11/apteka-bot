@@ -1000,6 +1000,26 @@ async def keep_telegram_connection_warm(bot, interval=15):
                 logger.warning("Telegram warm ping failed (%s in a row): %s", failures, e)
 
 
+async def initialize_with_retry(app, delay=3):
+    """Initialize the bot, retrying while Telegram is unreachable instead of crashing.
+
+    The VPS loses part of new connections to api.telegram.org; a single failed
+    getMe at startup used to kill the process and send systemd into a restart loop.
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            await app.initialize()
+            if attempt > 1:
+                logger.info("Telegram reachable after %s startup attempt(s)", attempt)
+            return
+        except NetworkError as e:  # TimedOut is a NetworkError
+            if attempt == 1 or attempt % 10 == 0:
+                logger.warning("Telegram unreachable at startup (attempt %s): %s", attempt, e)
+            await asyncio.sleep(delay)
+
+
 def main():
     """Run the bot."""
     # Load config
@@ -1023,7 +1043,7 @@ def main():
         .token(config.telegram_bot_token)
         .request(HTTPXRequest(
             connection_pool_size=8,
-            connect_timeout=30,
+            connect_timeout=5,
             read_timeout=30,
             write_timeout=30,
             pool_timeout=30,
@@ -1156,11 +1176,11 @@ def main():
             logger.info("📧 Email-мониторинг отключен (нет настроек в .env)")
         
         # Start bot polling
+        await initialize_with_retry(app)
         async with app:
-            await app.initialize()
             await app.start()
             logger.info("🤖 Бот запущен!")
-            await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+            await app.updater.start_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
             asyncio.create_task(keep_telegram_connection_warm(app.bot))
             
             # Keep running until interrupted
