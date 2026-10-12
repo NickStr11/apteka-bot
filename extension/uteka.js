@@ -400,7 +400,9 @@
 
             if (productId) {
                 const entry = data[PRODUCT_PREFIX + productId];
-                const fresh = entry && Date.now() - entry.ts < FRESH_MS;
+                // кэш до версии 2.5 без networkId — по нему нельзя заказать, обновляем сразу
+                const legacy = entry && (entry.offers || []).some(o => o.networkId === undefined);
+                const fresh = entry && !legacy && Date.now() - entry.ts < FRESH_MS;
                 if (!fresh && !requestedThisPage.has(productId)) {
                     requestedThisPage.add(productId);
                     requestPrices(productId);
