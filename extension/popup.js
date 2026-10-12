@@ -17,6 +17,45 @@ document.addEventListener('DOMContentLoaded', async () => {
         return (data.utekaTitles || {})[productId] || String(tab.title || '').split(' – ')[0].trim();
     }
 
+    // Поставщики Фарматека для этой карточки (их подтягивает панель uteka.js):
+    // выбираешь, у кого заказываешь, — в таблицу уйдут поставщик и цена +5%
+    const UTEKA_MARKUP = 0.05;
+    const suppliersBox = document.getElementById('uteka-suppliers');
+    let utekaOffers = [];
+    const [openedTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const openedUtekaId = utekaProductIdFromUrl(openedTab && openedTab.url);
+    if (openedUtekaId) {
+        const data = await chrome.storage.local.get(['utekaProd:' + openedUtekaId]);
+        const entry = data['utekaProd:' + openedUtekaId];
+        utekaOffers = ((entry && entry.offers) || []).map(o => ({
+            supplier: o.supplier, base: o.price, client: Math.ceil(o.price * (1 + UTEKA_MARKUP)),
+        }));
+        suppliersBox.style.display = 'block';
+        if (utekaOffers.length) {
+            suppliersBox.innerHTML = '<label>У кого заказываем (Фарматек, цена клиенту +5%)</label>' +
+                utekaOffers.map((o, i) => `
+                    <label class="opt">
+                        <input type="radio" name="uteka-supplier" value="${i}" ${i === 0 ? 'checked' : ''}>
+                        <span class="sup">${escapeHtml(o.supplier)}</span>
+                        <span class="price">${o.client.toLocaleString('ru-RU')} ₽</span>
+                    </label>`).join('');
+        } else {
+            suppliersBox.innerHTML = `<div class="note">${entry
+                ? '⚠️ Ютека не даёт поставщиков для Фарматека по этому товару.'
+                : '⚠️ Цены Фарматека ещё не загрузились (дождись зелёной панели и открой окно снова).'}
+                Заказ уйдёт без поставщика и цены.</div>`;
+        }
+    }
+
+    function selectedUtekaOffer() {
+        const checked = suppliersBox.querySelector('input[name="uteka-supplier"]:checked');
+        return checked ? utekaOffers[Number(checked.value)] : null;
+    }
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+    }
+
     // Force clear inputs (browser autofill fix)
     setTimeout(() => {
         phoneInput.value = '';
@@ -54,9 +93,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // Send to local bot API
-            const payload = isUteka
-                ? { phone, url, comment, product: await utekaProductTitle(tab, utekaId), source: 'uteka' }
-                : { phone, url, comment };
+            let payload = { phone, url, comment };
+            if (isUteka) {
+                const offer = utekaId === openedUtekaId ? selectedUtekaOffer() : null;
+                payload = { phone, url, comment, product: await utekaProductTitle(tab, utekaId), source: 'uteka' };
+                if (offer) Object.assign(payload, { supplier: offer.supplier, price: offer.client });
+            }
             const response = await fetch(CONFIG.API_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

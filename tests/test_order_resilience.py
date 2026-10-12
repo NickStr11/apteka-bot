@@ -146,7 +146,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         parser = Mock(side_effect=AssertionError("Uteka page must not be fetched"))
         self.ns.update(extract_product_with_price=parser, add_order=Mock(return_value=42), web=SimpleNamespace(json_response=lambda data, status=200: (status, data)))
         payload = {"phone": "89181234567", "comment": "Оля", "url": "https://krasnodar.uteka.ru/product/ksefomielin-392534/",
-                   "product": "КСЕФОмиелин, таблетки, 30 шт.", "price": 1214}
+                   "product": "КСЕФОмиелин, таблетки, 30 шт.", "price": 1214, "supplier": "POLZAru"}
         request = SimpleNamespace(json=AsyncMock(return_value=payload), app={"bot_app": app})
         response = await asyncio.wait_for(self.ns["api_handle_order"](request), timeout=1)
         await asyncio.gather(*tasks)
@@ -154,8 +154,9 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         parser.assert_not_called()
         order = self.ns["add_order"].call_args.args[1]
         self.assertEqual((order.phone, order.products, order.total, order.note),
-                         ("79181234567", "КСЕФОмиелин, таблетки, 30 шт.", 1214.0, "🌐 Ютека · Оля"))
+                         ("79181234567", "КСЕФОмиелин, таблетки, 30 шт.", 1214.0, "🌐 Ютека · POLZAru · Оля"))
         self.assertIn("с Ютеки", sent.call_args.kwargs["text"])
+        self.assertIn("🚚 POLZAru", sent.call_args.kwargs["text"])
 
         # без цены (попап шлёт только название): сумма 0, строки «💰» в уведомлении нет
         self.ns["add_order"].reset_mock()
@@ -165,6 +166,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response[0], 200)
         self.assertEqual(self.ns["add_order"].call_args.args[1].total, 0.0)
         self.assertNotIn("💰", sent.call_args.kwargs["text"])
+        self.assertEqual(self.ns["add_order"].call_args.args[1].note, "🌐 Ютека")
 
         self.ns["add_order"].reset_mock()
         request = SimpleNamespace(json=AsyncMock(return_value={"phone": "9181234567", "url": payload["url"]}), app={"bot_app": app})

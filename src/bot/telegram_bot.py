@@ -618,6 +618,7 @@ async def api_handle_order(request):
         is_uteka = 'uteka.ru' in url
         if is_uteka:
             product_name = str(data.get('product') or '').strip()
+            supplier = str(data.get('supplier') or '').strip()  # у кого заказываем на Ютеке
             try:
                 product_price = float(data.get('price') or 0)
             except (TypeError, ValueError):
@@ -640,7 +641,7 @@ async def api_handle_order(request):
         if comment:
             note = f"🌐 {comment}"
         if is_uteka:
-            note = f"🌐 Ютека · {comment}" if comment else "🌐 Ютека"
+            note = " · ".join(part for part in ("🌐 Ютека", supplier, comment) if part)
         
         # Create order
         order = OrderRow(
@@ -672,6 +673,8 @@ async def api_handle_order(request):
                 f"{display_comment}\n"
                 f"💊 {product_name}"
             )
+            if is_uteka and supplier:
+                msg += f"\n🚚 {supplier}"
             if is_uteka and product_price:
                 msg += f"\n💰 {product_price:g} ₽"
 
