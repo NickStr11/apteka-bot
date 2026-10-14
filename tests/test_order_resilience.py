@@ -245,12 +245,13 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         parser.assert_not_called()
         order = self.ns["add_order"].call_args.args[1]
         self.assertEqual((order.order_number, order.phone, order.products, order.total, order.note, order.photo),
-                         ("Браузер", "79181234567", payload["product"], 1504.0, "🌐 Apteka.ru №MA-280706178 · Оля", "https://images.apteka.ru/x.webp"))
+                         ("Браузер", "79181234567", payload["product"], 1504.0, "🌐 Apteka.ru №MA-280706178 · 🧡 себе 1354 ₽ (−10%, +150 ₽) · Оля", "https://images.apteka.ru/x.webp"))
         text = sent.call_args.kwargs["text"]
         self.assertIn("с Apteka.ru", text)
         self.assertIn("📋 №MA-280706178", text)
-        self.assertIn("💰 1504 ₽", text)
-        self.assertIn("витаминки −10%, оплачено 1354 ₽", text)
+        self.assertIn("💰 клиенту 1504 ₽", text)
+        self.assertIn("🧡 себе 1354 ₽ (витаминки −10%)", text)
+        self.assertIn("➕ разница 150 ₽", text)
 
         # без витаминок и без комментария
         self.ns["add_order"].reset_mock()

@@ -663,7 +663,11 @@ async def api_handle_order(request):
         if is_apteka_panel:
             # «Заказ» остаётся «Браузер»: PharmOrder по нему не дробит название по запятым
             head = f"🌐 Apteka.ru №{apteka_order_number}" if apteka_order_number else "🌐 Apteka.ru"
-            note = " · ".join(part for part in (head, comment) if part)
+            # витаминки: клиенту — полная цена («Сумма»), себе — со скидкой, разница остаётся аптеке
+            vit = ""
+            if vitamins_percent and paid_total and product_price:
+                vit = f"🧡 себе {paid_total:g} ₽ (−{vitamins_percent}%, +{product_price - paid_total:g} ₽)"
+            note = " · ".join(part for part in (head, vit, comment) if part)
         
         # Create order
         order = OrderRow(
@@ -704,9 +708,10 @@ async def api_handle_order(request):
                 if apteka_order_number:
                     msg += f"\n📋 №{apteka_order_number}"
                 if product_price:
-                    msg += f"\n💰 {product_price:g} ₽"
-                if vitamins_percent and paid_total:
-                    msg += f"\n🧡 витаминки −{vitamins_percent}%, оплачено {paid_total:g} ₽"
+                    msg += f"\n💰 клиенту {product_price:g} ₽"
+                if vitamins_percent and paid_total and product_price:
+                    msg += (f"\n🧡 себе {paid_total:g} ₽ (витаминки −{vitamins_percent}%)"
+                            f"\n➕ разница {product_price - paid_total:g} ₽")
 
             notification = notify_browser_order(app_tg.bot, admin_id, msg)
             app_tg.create_task(notification)

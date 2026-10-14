@@ -124,8 +124,8 @@
             return;
         }
         if (d.dryRun) {
-            setMsg(`ТЕСТ: корзина посчитала ${rub(d.totalBefore)}` +
-                (d.vitaminsPercent ? `, с витаминками ${rub(d.totalAfter)}` : '') + '.' + vitText(d) +
+            setMsg(`ТЕСТ: клиенту ${rub(d.totalBefore)}` +
+                (d.vitaminsPercent ? `, себе с витаминками ${rub(d.totalAfter)} (разница +${rub(d.totalBefore - d.totalAfter)})` : '') + '.' + vitText(d) +
                 ' Заказ не создан, корзина очищена, в таблицу не отправлено.', 'ok');
             return;
         }
@@ -142,7 +142,7 @@
             image: currentImage(),
         };
         resetForm(true);
-        const paid = d.vitaminsPercent ? `, оплатим ${rub(payload.paid_total)}` : '';
+        const paid = d.vitaminsPercent ? `; себе ${rub(payload.paid_total)}, разница +${rub(clientTotal - payload.paid_total)}` : '';
         setMsg(`Заказ${num} оформлен.${vitText(d)} Записываю в таблицу…`, 'ok');
         chrome.runtime.sendMessage({ type: 'bot-order', payload }, resp => {
             const err = chrome.runtime.lastError ? chrome.runtime.lastError.message
@@ -150,7 +150,7 @@
             if (err) {
                 setMsg(`Заказ${num} оформлен, но в таблицу НЕ записан (${err}). Отправь вручную через окно расширения.`, 'err');
             } else {
-                setMsg(`✅ Заказ${num} оформлен и записан в таблицу: ${p.phone || p.comment}, ${rub(clientTotal)}${paid}.`, 'ok');
+                setMsg(`✅ Заказ${num} оформлен и записан в таблицу: ${p.phone || p.comment}, клиенту ${rub(clientTotal)}${paid}.`, 'ok');
             }
         });
     }
