@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
     "name": "Apteka Order Helper",
-    "version": "2.6",
-    "description": "Быстрое оформление заказа с Apteka.ru; цены Фарматека +5% и заказы с Ютеки",
+    "version": "2.7",
+    "description": "Заказ в один клик с Apteka.ru и Ютеки (самовывоз в Фарматек), цены Фарматека +5% на Ютеке",
     "permissions": [
         "activeTab",
         "storage"
@@ -24,6 +24,17 @@
         {
             "matches": ["https://uteka.ru/*", "https://*.uteka.ru/*"],
             "js": ["uteka.js"],
+            "run_at": "document_start"
+        },
+        {
+            "matches": ["https://apteka.ru/*"],
+            "js": ["apteka-hook.js"],
+            "run_at": "document_start",
+            "world": "MAIN"
+        },
+        {
+            "matches": ["https://apteka.ru/*"],
+            "js": ["apteka.js"],
             "run_at": "document_start"
         }
     ],

@@ -222,6 +222,57 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response[0], 400)
         self.ns["add_order"].assert_not_called()
 
+    async def test_apteka_panel_order_uses_extension_data(self):
+        tasks = []
+        sent = AsyncMock()
+        app = SimpleNamespace(bot=SimpleNamespace(send_message=sent), bot_data={"sheet": object(), "config": SimpleNamespace(telegram_admin_id="1")})
+        def track(coro):
+            task = asyncio.create_task(coro)
+            tasks.append(task)
+            return task
+        app.create_task = track
+        parser = Mock(side_effect=AssertionError("Apteka.ru page must not be fetched for panel orders"))
+        self.ns.update(extract_product_with_price=parser, add_order=Mock(return_value=42), web=SimpleNamespace(json_response=lambda data, status=200: (status, data)))
+        url = "https://apteka.ru/product/magne-v6-60-sht-tabletki-pokrytye-obolochkoj-630f536b260509b64b8d8e89/"
+        payload = {"phone": "89181234567", "comment": "Оля", "url": url, "source": "apteka",
+                   "product": "Магне в6 60 шт. таблетки, покрытые оболочкой × 2", "price": 1504,
+                   "order_number": "MA-280706178", "vitamins_percent": 10, "paid_total": 1354,
+                   "image": "https://images.apteka.ru/x.webp"}
+        request = SimpleNamespace(json=AsyncMock(return_value=payload), app={"bot_app": app})
+        response = await asyncio.wait_for(self.ns["api_handle_order"](request), timeout=1)
+        await asyncio.gather(*tasks)
+        self.assertEqual(response, (200, {"status": "ok", "product": payload["product"]}))
+        parser.assert_not_called()
+        order = self.ns["add_order"].call_args.args[1]
+        self.assertEqual((order.order_number, order.phone, order.products, order.total, order.note, order.photo),
+                         ("Браузер", "79181234567", payload["product"], 1504.0, "🌐 Apteka.ru №MA-280706178 · Оля", "https://images.apteka.ru/x.webp"))
+        text = sent.call_args.kwargs["text"]
+        self.assertIn("с Apteka.ru", text)
+        self.assertIn("📋 №MA-280706178", text)
+        self.assertIn("💰 1504 ₽", text)
+        self.assertIn("витаминки −10%, оплачено 1354 ₽", text)
+
+        # без витаминок и без комментария
+        self.ns["add_order"].reset_mock()
+        request = SimpleNamespace(json=AsyncMock(return_value=dict(payload, comment="", vitamins_percent=0, paid_total=1504)), app={"bot_app": app})
+        await asyncio.wait_for(self.ns["api_handle_order"](request), timeout=1)
+        await asyncio.gather(*tasks)
+        self.assertEqual(self.ns["add_order"].call_args.args[1].note, "🌐 Apteka.ru №MA-280706178")
+        self.assertNotIn("витаминки", sent.call_args.kwargs["text"])
+
+        # старый попап (без source/product) по-прежнему скачивает страницу
+        self.ns["add_order"].reset_mock()
+        old_parser = Mock(return_value=SimpleNamespace(name="Магне B6", price=752))
+        self.ns.update(extract_product_with_price=old_parser)
+        request = SimpleNamespace(json=AsyncMock(return_value={"phone": "9181234567", "url": url}), app={"bot_app": app})
+        response = await asyncio.wait_for(self.ns["api_handle_order"](request), timeout=1)
+        await asyncio.gather(*tasks)
+        self.assertEqual(response[0], 200)
+        old_parser.assert_called_once_with(url)
+        order = self.ns["add_order"].call_args.args[1]
+        self.assertEqual((order.products, order.total, order.note), ("Магне B6", 752, "🌐 Расширение"))
+        self.assertIn("из браузера", sent.call_args.kwargs["text"])
+
     async def test_browser_blocked_parser_leaves_event_loop_responsive(self):
         started, release = threading.Event(), threading.Event()
         notifications = []

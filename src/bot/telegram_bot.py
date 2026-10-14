@@ -620,6 +620,11 @@ async def api_handle_order(request):
         # Ютека: страницу с VPS не скачать (капча, подписанные запросы) — название и
         # цену Фарматека +5% присылает расширение. Apteka.ru парсим как раньше.
         is_uteka = 'uteka.ru' in url
+        # Apteka.ru: панель расширения уже оформила заказ на сайте и присылает название,
+        # цену клиенту, номер заказа и витаминки — страницу не скачиваем
+        is_apteka_panel = (not is_uteka and str(data.get('source') or '') == 'apteka'
+                           and bool(str(data.get('product') or '').strip()))
+        apteka_order_number, vitamins_percent, paid_total = "", 0, 0.0
         if is_uteka:
             product_name = str(data.get('product') or '').strip()
             supplier = str(data.get('supplier') or '').strip()  # у кого заказываем на Ютеке
@@ -629,6 +634,15 @@ async def api_handle_order(request):
                 product_price = 0.0
             if not product_name:
                 return web.json_response({'status': 'error', 'message': 'Missing product for Uteka order'}, status=400)
+        elif is_apteka_panel:
+            product_name = str(data.get('product')).strip()
+            apteka_order_number = re.sub(r'[^\w\-]', '', str(data.get('order_number') or ''))[:40]
+            try:
+                product_price = float(data.get('price') or 0)
+                paid_total = float(data.get('paid_total') or 0)
+                vitamins_percent = int(float(data.get('vitamins_percent') or 0))
+            except (TypeError, ValueError):
+                product_price, paid_total, vitamins_percent = 0.0, 0.0, 0
         else:
             product_info = await asyncio.to_thread(extract_product_with_price, url)
             if not product_info:
@@ -646,6 +660,10 @@ async def api_handle_order(request):
             note = f"🌐 {comment}"
         if is_uteka:
             note = " · ".join(part for part in ("🌐 Ютека", supplier, comment) if part)
+        if is_apteka_panel:
+            # «Заказ» остаётся «Браузер»: PharmOrder по нему не дробит название по запятым
+            head = f"🌐 Apteka.ru №{apteka_order_number}" if apteka_order_number else "🌐 Apteka.ru"
+            note = " · ".join(part for part in (head, comment) if part)
         
         # Create order
         order = OrderRow(
@@ -673,7 +691,7 @@ async def api_handle_order(request):
             display_comment = f"👤 {comment}" if comment else "👤 (Без комментария)"
 
             msg = (
-                f"🌐 Новый заказ {'с Ютеки' if is_uteka else 'из браузера'}!\n\n"
+                f"🌐 Новый заказ {'с Ютеки' if is_uteka else 'с Apteka.ru' if is_apteka_panel else 'из браузера'}!\n\n"
                 f"📞 {display_phone}\n"
                 f"{display_comment}\n"
                 f"💊 {product_name}"
@@ -682,6 +700,13 @@ async def api_handle_order(request):
                 msg += f"\n🚚 {supplier}"
             if is_uteka and product_price:
                 msg += f"\n💰 {product_price:g} ₽"
+            if is_apteka_panel:
+                if apteka_order_number:
+                    msg += f"\n📋 №{apteka_order_number}"
+                if product_price:
+                    msg += f"\n💰 {product_price:g} ₽"
+                if vitamins_percent and paid_total:
+                    msg += f"\n🧡 витаминки −{vitamins_percent}%, оплачено {paid_total:g} ₽"
 
             notification = notify_browser_order(app_tg.bot, admin_id, msg)
             app_tg.create_task(notification)
