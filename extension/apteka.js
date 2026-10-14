@@ -39,6 +39,14 @@
         else if (d.type === 'order-result') onOrderResult(d);
     });
 
+    // Окно расширения («Отправить в Бот»): VPS страницу Apteka.ru скачать не может
+    // (сайт банит IP сервера) — название, цену и фото берём отсюда
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+        if (!msg || msg.type !== 'apteka-product') return;
+        const ok = st.info && st.itemId === itemIdFromPath(location.pathname);
+        sendResponse(ok ? { name: st.info.name, price: st.info.price, image: currentImage() } : null);
+    });
+
     function requestProduct() {
         const id = reqId();
         pending[id] = { kind: 'product', itemId: st.itemId };

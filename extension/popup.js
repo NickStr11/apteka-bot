@@ -17,6 +17,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         return (data.utekaTitles || {})[productId] || String(tab.title || '').split(' – ')[0].trim();
     }
 
+    // Apteka.ru: название с карточки даёт панель apteka.js; если она ещё не
+    // загрузила товар (или вкладка открыта до обновления расширения) — заголовок вкладки
+    async function aptekaProductInfo(tab) {
+        let info = null;
+        try {
+            info = await chrome.tabs.sendMessage(tab.id, { type: 'apteka-product' });
+        } catch (e) { /* на вкладке нет content script */ }
+        if (info && info.name) return info;
+        const title = String(tab.title || '').split(/\s+[—–-]\s+купить/i)[0].trim();
+        return { name: /[а-яё]/i.test(title) ? title : '' };
+    }
+
     // Поставщики Фарматека для этой карточки (их подтягивает панель uteka.js):
     // выбираешь, у кого заказываешь, — в таблицу уйдут поставщик и цена +5%
     const UTEKA_MARKUP = 0.05;
@@ -100,6 +112,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 payload = { phone, url, comment, product: await utekaProductTitle(tab, utekaId), source: 'uteka' };
                 if (images[utekaId]) payload.image = images[utekaId];
                 if (offer) Object.assign(payload, { supplier: offer.supplier, price: offer.client });
+            } else {
+                // Apteka.ru банит IP сервера (ошибка 432) — без названия отсюда бот
+                // собрал бы его транслитом из ссылки
+                const info = await aptekaProductInfo(tab);
+                if (info.name) {
+                    payload = { phone, url, comment, product: info.name, source: 'apteka' };
+                    if (info.price) payload.price = info.price;
+                    if (info.image) payload.image = info.image;
+                }
             }
             const response = await fetch(CONFIG.API_URL, {
                 method: 'POST',

@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Apteka Order Helper",
-    "version": "2.7",
+    "version": "2.8",
     "description": "Заказ в один клик с Apteka.ru и Ютеки (самовывоз в Фарматек), цены Фарматека +5% на Ютеке",
     "permissions": [
         "activeTab",
