@@ -198,7 +198,8 @@
                 <div class="orow">
                     <span class="muted">Кол-во</span>
                     <button class="qbtn" data-act="minus">−</button><b>${st.count}</b><button class="qbtn" data-act="plus">+</button>
-                    <span class="grow"></span>
+                </div>
+                <div class="orow">
                     <span class="muted">Витаминки</span>
                     <select data-f="vitamins">${vitOpts}</select>
                 </div>
@@ -236,8 +237,8 @@
                 .order { margin-top: 6px; padding: 8px; border: 1px solid #2563eb; border-radius: 8px; background: #eff6ff; }
                 .order input { display: block; box-sizing: border-box; width: 100%; margin: 0 0 6px; padding: 6px 8px;
                                border: 1px solid #d1d5db; border-radius: 6px; font: 14px system-ui, sans-serif; background: #fff; color: #111; }
-                .order select { padding: 3px 4px; border: 1px solid #d1d5db; border-radius: 6px; font: 13px system-ui, sans-serif; background: #fff; color: #111; }
-                .orow { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; white-space: nowrap; }
+                .order select { flex: 1; min-width: 0; padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; font: 13px system-ui, sans-serif; background: #fff; color: #111; }
+                .orow { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; white-space: nowrap; }
                 .orow .grow { flex: 1; }
                 .qbtn { width: 24px; height: 24px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; font: 600 14px system-ui; }
                 .btn { display: inline-block; margin-top: 8px; padding: 6px 10px; border-radius: 8px; border: 0;
