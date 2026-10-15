@@ -25,8 +25,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             info = await chrome.tabs.sendMessage(tab.id, { type: 'apteka-product' });
         } catch (e) { /* на вкладке нет content script */ }
         if (info && info.name) return info;
-        const title = String(tab.title || '').split(/\s+[—–-]\s+купить/i)[0].trim();
-        return { name: /[а-яё]/i.test(title) ? title : '' };
+        // «Торбад … 90 шт. капсулы массой 500 мг - цена 472 руб., купить в интернет аптеке …»
+        const raw = String(tab.title || '');
+        const title = raw.split(/\s+[—–-]\s+(?:цена|купить)/i)[0].trim();
+        const price = Number(((raw.match(/цена\s+(\d+(?:[.,]\d+)?)\s*руб/i) || [])[1] || '').replace(',', '.')) || 0;
+        if (!/[а-яё]/i.test(title)) return { name: '' };
+        return price > 0 ? { name: title, price } : { name: title };
     }
 
     // Поставщики Фарматека для этой карточки (их подтягивает панель uteka.js):
