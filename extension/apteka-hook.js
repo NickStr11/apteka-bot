@@ -54,20 +54,36 @@
         return m ? m[1].toLowerCase() : null;
     }
 
+    const values = o => (o && typeof o === 'object' ? Object.values(o) : []);
+
+    // Цена, type/typeKey и наличие: с 10.2026 сайт держит их в product.groupItems[].itemInfos[],
+    // описание (полное имя, рецептурность) — в product.iteminfo[id]; раньше всё было в product.products[id]
+    function productOffer(p, id) {
+        const old = (p.products || {})[p.selected];
+        if (old && sameId(old.id, id)) return old;
+        for (const g of values(p.groupItems)) {
+            const hit = values(g && g.itemInfos).find(i => i && sameId(i.id, id) && 'price' in i);
+            if (hit) return hit;
+        }
+        return null;
+    }
+
     // карточка грузится асинхронно (SPA): ждём, пока в хранилище окажется именно этот товар
     function productInfo(s) {
         const id = itemIdFromPath(location.pathname);
         const p = (s.store.state && s.store.state.product) || {};
-        const pr = (p.products || {})[p.selected];
-        if (!id || !pr || !sameId(pr.id, id)) return null;
+        if (!id || !sameId(p.selected, id)) return null;
+        const pr = productOffer(p, id);
+        if (!pr) return null;
+        const desc = values(p.iteminfo).find(i => i && sameId(i.id, id)) || {};
         return {
             itemId: String(pr.id),
-            name: String(pr.name || ''),
+            name: String(desc.name || pr.name || ''),
             price: Number(pr.price) || 0,
             type: pr.type || 'Base',
             typeKey: pr.typeKey == null ? null : pr.typeKey,
             outOfStock: !!pr.outOfStock,
-            prescription: !!pr.prescriptionDrug,
+            prescription: !!(pr.prescriptionDrug || desc.prescriptionDrug),
         };
     }
 

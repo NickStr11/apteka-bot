@@ -12,7 +12,7 @@ const ITEM = '630f536b260509b64b8d8e89';
 const OTHER = '111111111111111111111111';
 const FARMATEK = '5e3281c8f5a9ae0001418615';
 
-function setup({ cart = [], price = 752, cartPrice, vitInfo, orderFails = false, dryRun = false, loggedIn = true, autodestOk = true } = {}) {
+function setup({ cart = [], price = 752, cartPrice, vitInfo, orderFails = false, dryRun = false, loggedIn = true, autodestOk = true, layout = 'groups' } = {}) {
     const calls = [];
     let items = cart.map(i => Object.assign({}, i));
     let vitUsed = 0;
@@ -54,7 +54,17 @@ function setup({ cart = [], price = 752, cartPrice, vitInfo, orderFails = false,
     const store = {
         state: {
             user: loggedIn ? { login: '+70000000000' } : { login: null },
-            product: { selected: ITEM, products: { [ITEM]: { id: ITEM, name: 'Магне в6 60 шт.', price, type: 'Base', typeKey: null, outOfStock: false } } },
+            product: layout === 'products'
+                // схема до 10.2026
+                ? { selected: ITEM, products: { [ITEM]: { id: ITEM, name: 'Магне в6 60 шт.', price, type: 'Base', typeKey: null, outOfStock: false } } }
+                : {
+                    selected: ITEM,
+                    iteminfo: { [ITEM]: { id: ITEM, name: 'Магне в6 60 шт. таблетки, покрытые оболочкой', prescriptionDrug: false } },
+                    groupItems: [{ itemInfos: [
+                        { id: OTHER, name: 'Магне в6 30 шт.', price: 400, type: 'Base', typeKey: null, outOfStock: false },
+                        { id: ITEM, name: 'Магне в6 60 шт.', price, type: 'Base', typeKey: null, outOfStock: false },
+                    ] }],
+                },
         },
         getters: {},
         async dispatch(name, arg) {
@@ -182,6 +192,14 @@ const tests = {
         assert.strictEqual(r.info.price, 752);
         assert.deepStrictEqual(r.otherItems, ['Чужой']);
         assert.strictEqual(r.vitBalance, 2862);
+        assert.strictEqual(r.info.name, 'Магне в6 60 шт. таблетки, покрытые оболочкой');
+    },
+    async 'старая схема product.products — карточка и заказ'() {
+        const t = setup({ layout: 'products' });
+        await t.hook.sendProductInfo({ reqId: 'p' });
+        const r = t.posted.find(m => m.type === 'product-info');
+        assert.strictEqual(r.info.price, 752);
+        assert.strictEqual((await t.order()).ok, true);
     },
 };
 
